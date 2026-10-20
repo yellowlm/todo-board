@@ -59,10 +59,14 @@ var (
 
 // monitorState 全部驻留内存，进程结束即失效。
 type monitorState struct {
-	section string
-	key     string
-	hash    string
-	prev    []task
+	running   bool
+	section   string
+	sectionID int64
+	key       string
+	interval  int
+	target    string
+	hash      string
+	prev      []task
 }
 
 type task struct {
@@ -485,13 +489,24 @@ func buildNotice(list taskListResponse, added []task, changed, deleted []string)
 
 var monitorStop chan struct{}
 
-func startMonitor(section, key string, interval int) {
+func currentTarget() string {
+	return targetKind + "|" + targetTeam + "|" + targetSlot
+}
+
+func startMonitor(section string, sectionID int64, key string, interval int) {
 	stopMonitor()
 	stop := make(chan struct{})
 	monitorStop = stop
 
 	stateMu.Lock()
-	state = monitorState{section: section, key: key}
+	state = monitorState{
+		running:   true,
+		section:   section,
+		sectionID: sectionID,
+		key:       key,
+		interval:  interval,
+		target:    currentTarget(),
+	}
 	stateMu.Unlock()
 
 	go func() {
@@ -715,7 +730,19 @@ func callTool(name string, raw json.RawMessage) (string, bool) {
 		if err != nil {
 			return "启动失败（首次读取看板出错）：" + err.Error(), true
 		}
-		startMonitor(in.Section, in.Key, interval)
+		cur := currentMonitor()
+		if cur.running && cur.sectionID == list.Section.ID && cur.interval == interval &&
+			cur.key == in.Key && cur.target == currentTarget() {
+			dbg("监控已在运行，保留基线（分区 #%d，间隔 %d）", cur.sectionID, cur.interval)
+			return fmt.Sprintf("监控已在运行（分区「%s」#%d，间隔 %d 秒），保留原有基线、未重建。",
+				list.Section.Name, list.Section.ID, cur.interval), false
+		}
+		if cur.running {
+			dbg("因参数变更重建基线（分区 #%d 间隔 %d → 分区 #%d 间隔 %d）", cur.sectionID, cur.interval, list.Section.ID, interval)
+		} else {
+			dbg("建立基线（分区 #%d，间隔 %d 秒）", list.Section.ID, interval)
+		}
+		startMonitor(in.Section, list.Section.ID, in.Key, interval)
 		return fmt.Sprintf("已开始盯盘 %s，间隔 %d 秒；后续有变化会向本会话发送[通知]。", summarize(list), interval), false
 
 	case "stop_monitor":
