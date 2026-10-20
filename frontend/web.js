@@ -199,9 +199,21 @@ async function loadTasks(sid, filter, append) {
 
 /* ---------------- 渲染 ---------------- */
 
-function sectionColor(index) {
-  const colors = ['#3B82F6', '#A78BFA', '#6B7280'];
-  return colors[index % colors.length];
+// 与桌面版同一套 8 色色板、同一取值顺序（按 sort_order 循环）
+const SEC_COLORS = [
+  { hex: '#3B82F6', rgb: '59,130,246' },
+  { hex: '#A78BFA', rgb: '167,139,250' },
+  { hex: '#22D3EE', rgb: '34,211,238' },
+  { hex: '#34D399', rgb: '52,211,153' },
+  { hex: '#FBBF24', rgb: '251,191,36' },
+  { hex: '#F472B6', rgb: '244,114,182' },
+  { hex: '#FB923C', rgb: '251,146,60' },
+  { hex: '#F87171', rgb: '248,113,113' },
+];
+
+function secVars(index) {
+  const c = SEC_COLORS[index % SEC_COLORS.length];
+  return `--sec-color:${c.hex};--sec-soft:rgba(${c.rgb},0.06);--sec-hover:rgba(${c.rgb},0.12)`;
 }
 
 function dueMeta(task) {
@@ -269,11 +281,11 @@ function colHtml(sec, index) {
   const more = st.items.length < st.total
     ? `<button class="more" data-act="more">加载更多（${st.items.length}/${st.total}）</button>`
     : '';
-  return `<div class="col" data-sid="${sec.id}" draggable="true" style="border-left:3px solid ${sectionColor(index)}">
+  return `<div class="col" data-sid="${sec.id}" draggable="true" style="${secVars(index)};border-left:3px solid var(--sec-color)">
     <div class="col-head">
       <div class="col-row1">
         <svg class="i sm chev" data-act="collapse"><use href="#i-chev"/></svg>
-        <span class="col-name">${esc(sec.name)}</span>
+        <span class="col-name">${esc(sec.name)}</span><span class="col-id">#${sec.id}</span>
         <span class="col-count">${sec.total}</span>
         <div class="sp-bar"><div class="sp-fill" style="width:${pct}%"></div></div>
         <div class="grow"></div>
@@ -573,6 +585,16 @@ function bind() {
     } catch (e) { toast(e.message, true); }
   });
 
+  $('#sectionAdmin').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-del]');
+    if (!btn) return;
+    const row = btn.closest('.admin-row');
+    const sid = Number(btn.dataset.del);
+    const name = row ? row.querySelector('.admin-name').textContent.trim() : '#' + sid;
+    const count = row ? Number((row.querySelector('.admin-count').textContent || '0').replace(/[^0-9]/g, '')) : 0;
+    deleteSection(sid, name, count);
+  });
+
   // SSE
   let timer = null;
   const es = new EventSource('/api/events');
@@ -593,6 +615,32 @@ function fillBark() {
   $('#barkHint').textContent = b.enabled ? '总开关：已启用' : '总开关：已关闭（分区开关生效但不会推送）';
 }
 
+async function renderSectionAdmin() {
+  try {
+    const res = await api('GET', '/api/sections');
+    const rows = (res.sections || []).map((s) => `<div class="admin-row" data-sid="${s.id}">
+      <span class="admin-name">${esc(s.name)} <span class="admin-id">#${s.id}</span></span>
+      <span class="admin-count">${s.total || 0} 条任务</span>
+      <button class="btn danger" data-del="${s.id}">🗑️ 删除</button>
+    </div>`).join('');
+    $('#sectionAdmin').innerHTML = rows || '<div class="secrow-key">还没有分区</div>';
+  } catch (e) {
+    $('#sectionAdmin').textContent = '读取分区失败：' + e.message;
+  }
+}
+
+async function deleteSection(sid, name, count) {
+  if (!window.confirm(`将删除分区「${name}」，并连同 ${count} 条任务一起删除，不可恢复。确定删除？`)) return;
+  try {
+    const res = await api('DELETE', `/api/sections/${sid}`);
+    toast(`已删除分区，连同 ${(res && res.deleted_tasks) || 0} 条任务`);
+    await renderSectionAdmin();
+    await refreshAll();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
 async function openSettings() {
   $('#settingsModal').hidden = false;
   try {
@@ -607,6 +655,7 @@ async function openSettings() {
   } catch (e) {
     toast(e.message, true);
   }
+  renderSectionAdmin();
 }
 
 (async function init() {

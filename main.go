@@ -266,11 +266,19 @@ func main() {
 	defer store.Close()
 
 	srv := NewServer(store, dbPath)
-	if err := srv.Start(*port); err != nil {
+	binds := loadBinds()
+	failures, err := srv.Start(*port, binds)
+	if err != nil {
 		fatal("启动本地服务失败", err)
 	}
+	for addr, msg := range failures {
+		log.Printf("监听 %s 失败: %s", addr, msg)
+	}
 	defer srv.Stop()
-	log.Printf("本地服务已启动: %s", srv.BaseURL())
+	log.Printf("本地服务已启动: %s（监听 %s，端口 %d）", srv.BaseURL(), strings.Join(srv.Listening(), "、"), srv.Port())
+	if len(failures) > 0 {
+		log.Printf("有 %d 个监听地址启动失败，已跳过", len(failures))
+	}
 	baseURL = srv.BaseURL()
 
 	if isHeadless {

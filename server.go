@@ -125,12 +125,17 @@ func (h *hub) broadcast(kind string) {
 }
 
 type Server struct {
-	store   *Store
-	dbPath  string
-	hub     *hub
-	httpSrv *http.Server
-	ln      net.Listener
-	baseURL string
+	store     *Store
+	dbPath    string
+	hub       *hub
+	httpSrv   *http.Server
+	ln        net.Listener
+	baseURL   string
+	port      int
+	handler   http.Handler
+	binds     []string
+	listening []string
+	bounds    []boundListener
 
 	OnHide          func()
 	OnDrag          func()
@@ -153,41 +158,241 @@ func NewServer(store *Store, dbPath string) *Server {
 	return &Server{store: store, dbPath: dbPath, hub: newHub()}
 }
 
-func (s *Server) Start(port int) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("监听 %s 失败: %w", addr, err)
-	}
+// Start 在多个地址上监听（共用同一 handler）。返回逐条失败原因；全部失败才算错误。
+func (s *Server) Start(port int, binds []string) (map[string]string, error) {
 	static, err := fs.Sub(frontendFS, "frontend")
 	if err != nil {
-		ln.Close()
-		return fmt.Errorf("加载前端资源失败: %w", err)
+		return nil, fmt.Errorf("加载前端资源失败: %w", err)
 	}
 	mux := http.NewServeMux()
 	s.routes(mux, static)
-	s.ln = ln
-	s.baseURL = "http://" + ln.Addr().String()
-	s.httpSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		if err := s.httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("HTTP 服务异常退出: %v", err)
-		}
-	}()
-	return nil
+	s.handler = mux
+	s.port = port
+	return s.rebind(binds)
 }
 
+type boundListener struct {
+	addr string
+	ln   net.Listener
+	srv  *http.Server
+}
+
+func (b boundListener) close() {
+	_ = b.ln.Close()
+}
+
+// rebind 先开新增地址、全部成功后才关闭被移除的旧地址；任一新增失败则一条旧监听都不动。
+func (s *Server) rebind(binds []string) (map[string]string, error) {
+	binds = normalizeBinds(binds)
+	if len(binds) == 0 {
+		binds = []string{defaultBind}
+	}
+
+	current := map[string]boundListener{}
+	for _, b := range s.bounds {
+		current[b.addr] = b
+	}
+	want := map[string]bool{}
+	for _, b := range binds {
+		want[b] = true
+	}
+
+	// 1) 被移除、且与新通配地址抢同一端口的旧监听必须先关（0.0.0.0 vs 具体 IPv4、:: vs 具体 IPv6）
+	toAdd := []string{}
+	for _, b := range binds {
+		if _, ok := current[b]; !ok {
+			toAdd = append(toAdd, b)
+		}
+	}
+	closedForConflict := []boundListener{}
+	for _, b := range toAdd {
+		for addr, bl := range current {
+			if want[addr] || !addrConflicts(b, addr) {
+				continue
+			}
+			bl.close()
+			closedForConflict = append(closedForConflict, bl)
+			delete(current, addr)
+			log.Printf("为绑定 %s 先停止监听: %s", b, addr)
+		}
+	}
+
+	// 2) 打开新集合里「当前没有」的地址
+	added := map[string]boundListener{}
+	failures := map[string]string{}
+	for _, b := range toAdd {
+		if _, ok := current[b]; ok {
+			continue
+		}
+		bl, err := s.listenOne(b)
+		if err != nil {
+			failures[b] = err.Error()
+			log.Printf("监听 %s 失败: %v", net.JoinHostPort(b, strconv.Itoa(s.port)), err)
+			continue
+		}
+		added[b] = bl
+	}
+
+	// 3) 有任一失败：关闭本次新开的，尽力恢复刚为冲突关掉的旧监听
+	if len(failures) > 0 {
+		for _, bl := range added {
+			bl.close()
+		}
+		restored := 0
+		for _, bl := range closedForConflict {
+			if nb, err := s.listenOne(bl.addr); err == nil {
+				current[bl.addr] = nb
+				restored++
+			}
+		}
+		log.Printf("新配置失败，已恢复 %d/%d 个旧监听", restored, len(closedForConflict))
+		return failures, fmt.Errorf("新配置里有 %d 个地址监听失败，已保持原有监听不变", len(failures))
+	}
+
+	// 4) 全部新地址就绪后，才关闭旧集合里被移除的监听
+	for addr, bl := range current {
+		if !want[addr] {
+			bl.close()
+			log.Printf("已停止监听: %s", addr)
+		}
+	}
+
+	// 5) 组装新状态（保留项复用旧监听器）
+	next := make([]boundListener, 0, len(binds))
+	for _, b := range binds {
+		if bl, ok := current[b]; ok {
+			next = append(next, bl)
+			continue
+		}
+		next = append(next, added[b])
+	}
+	s.applyBounds(next)
+	return failures, nil
+}
+
+// listenOne 打开一个监听器并起 Serve。
+// 语义：0.0.0.0 → 仅 IPv4（tcp4）；:: → 仅 IPv6（tcp6）；域名 → 先解析，绑到解析出的 IP。
+func (s *Server) listenOne(bind string) (boundListener, error) {
+	host := bind
+	network := "tcp"
+	if ip := net.ParseIP(bind); ip != nil {
+		if ip.To4() != nil {
+			network = "tcp4"
+		} else {
+			network = "tcp6"
+		}
+	} else {
+		ips, err := net.LookupIP(bind)
+		if err != nil {
+			return boundListener{}, fmt.Errorf("解析域名 %s 失败: %w", bind, err)
+		}
+		if len(ips) == 0 {
+			return boundListener{}, fmt.Errorf("解析域名 %s 没有得到任何地址", bind)
+		}
+		ip := ips[0]
+		host = ip.String()
+		if ip.To4() != nil {
+			network = "tcp4"
+		} else {
+			network = "tcp6"
+		}
+		log.Printf("域名 %s 解析为 %s", bind, host)
+	}
+	addr := net.JoinHostPort(host, strconv.Itoa(s.port))
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		return boundListener{}, err
+	}
+	srv := &http.Server{Handler: s.handler, ReadHeaderTimeout: 5 * time.Second}
+	go func(srv *http.Server, ln net.Listener) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) &&
+			!strings.Contains(err.Error(), "use of closed network connection") {
+			log.Printf("HTTP 服务异常退出: %v", err)
+		}
+	}(srv, ln)
+	log.Printf("监听成功: %s（%s）", bind, ln.Addr().String())
+	return boundListener{addr: bind, ln: ln, srv: srv}, nil
+}
+
+func (s *Server) applyBounds(bounds []boundListener) {
+	s.bounds = bounds
+	s.listening = make([]string, 0, len(bounds))
+	for _, b := range bounds {
+		s.listening = append(s.listening, b.addr)
+	}
+	// 配置与生效集合保持一致（失败已在上面提前返回）
+	s.binds = append([]string{}, s.listening...)
+	s.baseURL = shellURL(s.listening, s.port)
+	if len(bounds) > 0 {
+		s.httpSrv = bounds[0].srv
+		s.ln = bounds[0].ln
+	}
+	if HasNonLoopback(s.listening) {
+		log.Printf("注意：已在非环回地址上监听（%s），网页端无鉴权，同网段任何人可读写", strings.Join(s.listening, "、"))
+	}
+}
+
+func (s *Server) closeListeners() {
+	for _, b := range s.bounds {
+		b.close()
+	}
+	s.bounds = nil
+}
+
+// shellURL 给桌面壳用的本机可达地址：优先环回项，通配地址映射为环回。
+func shellURL(listening []string, port int) string {
+	pick := ""
+	for _, b := range listening {
+		if isLoopbackBind(b) {
+			pick = b
+			break
+		}
+	}
+	if pick == "" && len(listening) > 0 {
+		pick = listening[0]
+		switch pick {
+		case "0.0.0.0":
+			pick = "127.0.0.1"
+		case "::":
+			pick = "::1"
+		}
+	}
+	if pick == "" {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(pick, strconv.Itoa(port))
+}
+
+// HasNonLoopback 判断是否存在对外可达的监听地址。
+func HasNonLoopback(listening []string) bool {
+	for _, b := range listening {
+		if !isLoopbackBind(b) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) BindConfig() []string { return append([]string{}, s.binds...) }
+func (s *Server) Listening() []string  { return append([]string{}, s.listening...) }
+func (s *Server) Port() int            { return s.port }
+func (s *Server) Rebind(binds []string) (map[string]string, error) {
+	return s.rebind(binds)
+}
 func (s *Server) BaseURL() string { return s.baseURL }
 
 func (s *Server) Stop() {
-	if s == nil || s.httpSrv == nil {
+	if s == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := s.httpSrv.Shutdown(ctx); err != nil {
-		log.Printf("关闭 HTTP 服务: %v", err)
+	for _, b := range s.bounds {
+		if err := b.srv.Shutdown(ctx); err != nil {
+			log.Printf("关闭 HTTP 服务: %v", err)
+		}
 	}
+	s.closeListeners()
 }
 
 func (s *Server) notify(kind string) { s.hub.broadcast(kind) }
@@ -208,6 +413,7 @@ func (s *Server) routes(mux *http.ServeMux, static fs.FS) {
 	mux.HandleFunc("GET /api/sections", s.handleSectionList)
 	mux.HandleFunc("POST /api/sections", s.handleSectionCreate)
 	mux.HandleFunc("PUT /api/sections/{id}", s.handleSectionRename)
+	mux.HandleFunc("DELETE /api/sections/{id}", s.handleSectionDelete)
 	mux.HandleFunc("GET /api/sections/{id}/key", s.handleSectionKeyGet)
 	mux.HandleFunc("PUT /api/sections/{id}/key", s.handleSectionKeyPut)
 
@@ -221,6 +427,7 @@ func (s *Server) routes(mux *http.ServeMux, static fs.FS) {
 
 	mux.HandleFunc("GET /api/settings", s.handleSettings)
 	mux.HandleFunc("POST /api/settings/autostart", s.handleAutostart)
+	mux.HandleFunc("PUT /api/settings/bind", s.handleBindPut)
 	mux.HandleFunc("POST /api/window/close", s.handleWindowClose)
 	mux.HandleFunc("POST /api/window/hide", s.handleWindowHide)
 	mux.HandleFunc("POST /api/window/drag", s.handleWindowDrag)
@@ -639,7 +846,39 @@ func (s *Server) handleSectionList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sections": sections, "count": len(sections)})
+	now := time.Now().Format(timeLayout)
+	bySection, err := s.store.CountsBySection(now)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	type sectionWithCounts struct {
+		Section
+		counts
+	}
+	out := make([]sectionWithCounts, 0, len(sections))
+	for _, sec := range sections {
+		c := bySection[sec.ID]
+		out = append(out, sectionWithCounts{Section: sec, counts: counts{
+			Total: c.Total, Open: c.Open, Doing: c.Doing, Done: c.Done, Overdue: c.Overdue,
+		}})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sections": out, "count": len(out)})
+}
+
+func (s *Server) handleSectionDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r.PathValue("id"), ErrNoSection)
+	if !ok {
+		return
+	}
+	deleted, err := s.store.DeleteSection(id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.notify("sections")
+	s.notify("board")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "deleted_tasks": deleted})
 }
 
 func (s *Server) handleSectionCreate(w http.ResponseWriter, r *http.Request) {
@@ -741,11 +980,47 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		autostart = s.AutostartStatus()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":   Version,
-		"api_base":  s.BaseURL(),
-		"db_path":   s.dbPath,
-		"autostart": autostart,
+		"version":      Version,
+		"api_base":     s.BaseURL(),
+		"db_path":      s.dbPath,
+		"autostart":    autostart,
+		"port":         s.Port(),
+		"bind":         s.BindConfig(),
+		"listening":    s.Listening(),
+		"lan_open":     HasNonLoopback(s.Listening()),
+		"default_bind": defaultBind,
 	})
+}
+
+func (s *Server) handleBindPut(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Binds []string `json:"binds"`
+	}
+	if !decodeBody(w, r, &in) {
+		return
+	}
+	binds := normalizeBinds(in.Binds)
+	if len(binds) == 0 {
+		binds = []string{defaultBind}
+	}
+	failures, err := s.Rebind(binds)
+	if err == nil {
+		if saveErr := saveBinds(s.BindConfig()); saveErr != nil {
+			log.Printf("保存 listen.json 失败: %v", saveErr)
+		}
+	}
+	resp := map[string]any{
+		"ok":        err == nil,
+		"bind":      s.BindConfig(),
+		"listening": s.Listening(),
+		"failures":  failures,
+		"port":      s.Port(),
+		"lan_open":  HasNonLoopback(s.Listening()),
+	}
+	if err != nil {
+		resp["error"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleAutostart(w http.ResponseWriter, r *http.Request) {
@@ -1389,4 +1664,27 @@ func (s *Server) handleWebStats(w http.ResponseWriter, r *http.Request) {
 		"done":    t.Done,
 		"overdue": t.Overdue,
 	})
+}
+
+// addrConflicts 判断两个监听地址是否会抢同一端口（通配地址与同类具体地址冲突）。
+func addrConflicts(a, b string) bool {
+	if a == b {
+		return false
+	}
+	ipA, ipB := net.ParseIP(a), net.ParseIP(b)
+	isV4 := func(ip net.IP) bool { return ip != nil && ip.To4() != nil }
+	isV6 := func(ip net.IP) bool { return ip != nil && ip.To4() == nil }
+	if a == "0.0.0.0" {
+		return isV4(ipB)
+	}
+	if a == "::" {
+		return isV6(ipB)
+	}
+	if b == "0.0.0.0" {
+		return isV4(ipA)
+	}
+	if b == "::" {
+		return isV6(ipA)
+	}
+	return false
 }

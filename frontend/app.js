@@ -2,7 +2,22 @@
 
 const $ = (sel) => document.querySelector(sel);
 
-const COLORS = ['sec-blue', 'sec-violet', 'sec-gray'];
+// 分区色板（8 色，桌面与浏览器版同一套、同一顺序，按 sort_order 循环）
+const SEC_COLORS = [
+  { hex: '#3B82F6', rgb: '59,130,246' },
+  { hex: '#A78BFA', rgb: '167,139,250' },
+  { hex: '#22D3EE', rgb: '34,211,238' },
+  { hex: '#34D399', rgb: '52,211,153' },
+  { hex: '#FBBF24', rgb: '251,191,36' },
+  { hex: '#F472B6', rgb: '244,114,182' },
+  { hex: '#FB923C', rgb: '251,146,60' },
+  { hex: '#F87171', rgb: '248,113,113' },
+];
+
+function secStyle(index) {
+  const c = SEC_COLORS[index % SEC_COLORS.length];
+  return `--sec-color:${c.hex};--sec-soft:rgba(${c.rgb},0.07);--sec-hover:rgba(${c.rgb},0.13);--sec-active:rgba(${c.rgb},0.2)`;
+}
 const MODE_LABEL = { open: '未完成', doing: '处理中', done: '已完成', all: '全部' };
 const MODE_NEXT = { open: 'doing', doing: 'done', done: 'all', all: 'open' };
 const STATUS_TAG = { doing: '🔧 处理中', done: '' };
@@ -23,11 +38,18 @@ const state = {
   collapsed: {},
   revealed: {},
   editing: null,
+  bindDraft: null,
   modal: null,
   lastTaskId: null,
 };
 
 /* ---------------- 基础工具 ---------------- */
+
+function isLoopbackBind(host) {
+  const h = String(host || '').trim().toLowerCase().replace(/^\[(.*)\]$/, '$1');
+  if (h === 'localhost' || h === '::1') return true;
+  return /^127\./.test(h);
+}
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
@@ -150,6 +172,7 @@ async function openSettings() {
   try {
     state.settings = await api('GET', '/api/settings');
     state.bark = await api('GET', '/api/bark');
+    state.bindDraft = (state.settings.bind || ['127.0.0.1']).slice();
   } catch (e) {
     toast(e.message, true);
   }
@@ -270,14 +293,18 @@ function taskHtml(task, now) {
   const cls = [isDone ? 'done' : '', task.status || 'open'].join(' ').trim();
   return `<div class="task ${cls}${selected}" data-id="${task.id}">
     <div class="check ${task.status || 'open'}" title="左键完成 / 右键处理中">${check}</div>
-    <div>
-      <div class="task-title">${esc(task.title)}${barkBadge(task)}</div>
-      <div class="task-meta ${m.cls}">${m.tag ? `<span class="tag">${m.tag}</span>` : '<span></span>'}<span class="mdate">${esc(m.date)}</span></div>
+    <div class="task-main">
+      <div class="task-line">
+        <span class="task-title">${esc(task.title)}${barkBadge(task)}</span>
+      </div>
     </div>
     <div class="actions">
-      ${toggle}
-      <button class="rowbtn" data-act="edit">✏️ 编辑</button>
-      <button class="rowbtn danger" data-act="del">🗑️ 删除</button>
+      <span class="task-meta ${m.cls}">${m.tag ? `<span class="tag">${m.tag}</span>` : ''}<span class="mdate">${esc(m.date)}</span></span>
+      <div class="task-btns">
+        ${toggle}
+        <button class="rowbtn" data-act="edit">✏️ 编辑</button>
+        <button class="rowbtn danger" data-act="del">🗑️ 删除</button>
+      </div>
     </div>
   </div>`;
 }
@@ -310,13 +337,13 @@ function sectionHtml(section, index, now) {
   const done = tasks.filter((t) => t.status === 'done').length;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const shown = tasks.filter((t) => (mode === 'all' ? true : t.status === mode));
-  const color = COLORS[index % COLORS.length];
+
   const body = shown.length ? shown.map((t) => taskHtml(t, now)).join('') : emptyBodyHtml(mode);
 
-  return `<div class="section ${color}${collapsed ? ' collapsed' : ''}" data-sid="${section.id}">
+  return `<div class="section${collapsed ? ' collapsed' : ''}" style="${secStyle(index)}" data-sid="${section.id}">
     <div class="section-head" draggable="true">
       <svg class="i sm chev"><use href="#i-chev"/></svg>
-      <span class="section-name">${esc(section.name)}</span>
+      <span class="section-name">${esc(section.name)}</span><span class="section-id">#${section.id}</span>
       <span class="section-count">${shown.length}</span>
       <div class="secprog"><div class="sp-bar"><div class="sp-fill" style="width:${pct}%"></div></div></div>
       <div class="grow"></div>
@@ -446,10 +473,10 @@ function renderDetail() {
 function secRow(section) {
   const revealed = state.revealed[section.id];
   const key = revealed ? esc(revealed) : esc(section.key_masked || '');
-  return `<div class="secrow" data-sid="${section.id}">
-    <div>
-      <div class="secrow-name">${esc(section.name)}</div>
-      <div class="secrow-key">认证密钥：<span class="key">${key}</span></div>
+  return `<div class="secrow secrow-card" data-sid="${section.id}">
+    <div class="secrow-head">
+      <span class="secrow-name">${esc(section.name)}</span>
+      <span class="secrow-key">认证密钥：<span class="key">${key}</span></span>
     </div>
     <div class="actions">
       <div class="inline-toggle"><span class="mini-label">完成推送</span>
@@ -459,6 +486,7 @@ function secRow(section) {
       <button class="rowbtn" data-act="reveal">${revealed ? '🙈 隐藏密钥' : '👁️ 查看密钥'}</button>
       <button class="rowbtn" data-act="rename">✏️ 修改名称</button>
       <button class="rowbtn" data-act="rekey">🔑 修改密钥</button>
+      <button class="rowbtn danger" data-act="del-sec">🗑️ 删除分区</button>
     </div>
   </div>`;
 }
@@ -466,8 +494,8 @@ function secRow(section) {
 function secRowEditing(section, editing) {
   if (editing.sid !== section.id) return secRow(section);
   const isKey = editing.field === 'key';
-  return `<div class="secrow editing" data-sid="${section.id}">
-    <div>
+  return `<div class="secrow secrow-card editing" data-sid="${section.id}">
+    <div class="secrow-head">
       <input class="input${isKey ? ' key-input' : ''}" id="editInput"
         placeholder="${isKey ? '输入新密钥，留空则随机生成' : ''}"
         value="${isKey ? '' : esc(section.name)}">
@@ -514,7 +542,29 @@ function renderSettings() {
     $('#settingsList').innerHTML = '';
     return;
   }
+  const binds = state.bindDraft || state.settings.bind || ['127.0.0.1'];
+  const listening = state.settings.listening || [];
+  const port = state.settings.port || 17321;
+  const lanOpen = (state.settings.lan_open || binds.some((b) => !isLoopbackBind(b))) ? true : false;
   $('#settingsList').innerHTML = `
+    <div class="secrow bark-card">
+      <div class="bark-fields">
+        <div class="secrow-name">🌐 监听地址</div>
+        <div class="secrow-key">默认只监听本机（127.0.0.1）。也可以添加 IPv4 / IPv6 / 主机名，保存后立即生效。</div>
+        ${lanOpen ? '<div class="warn-note">⚠️ 已对局域网开放：网页端没有鉴权，同网段任何人都能读写。</div>' : ''}
+        <label class="bind-local"><input type="checkbox" id="bindLocal" ${binds.length === 1 && binds[0] === '127.0.0.1' ? 'checked' : ''}> 仅本机（127.0.0.1）</label>
+        <div class="bind-list">
+          ${binds.map((b, i) => `<div class="bind-row"><span class="key">${esc(b)}</span>${listening.indexOf(b) >= 0 ? '<span class="bind-ok">已生效</span>' : '<span class="bind-bad">未生效</span>'}<button class="rowbtn danger" data-act="bind-del" data-i="${i}" title="移除">✕</button></div>`).join('') || '<div class="secrow-key">（尚未添加任何地址）</div>'}
+        </div>
+        <div class="bind-add">
+          <input class="input" id="bindInput" placeholder="如 0.0.0.0、::、::1、192.168.1.5、host.example.com">
+          <button class="rowbtn" data-act="bind-add">➕ 添加</button>
+        </div>
+        <div class="secrow-key">说明：<code>0.0.0.0</code> 绑定全部 IPv4 网卡；<code>::</code> 绑定全部 IPv6 网卡（两者互不冲突，可同时添加）；<code>::1</code> 只听 IPv6 环回；填域名则按解析出的地址绑定。</div>
+        <div class="secrow-key">当前生效：${esc(listening.join('、') || '（无）')} · 端口 ${port}</div>
+      </div>
+      <div class="bark-actions"><button class="rowbtn" data-act="bind-save">💾 保存并生效</button></div>
+    </div>
     <div class="secrow">
       <div>
         <div class="secrow-name">⚡ 开机自启动</div>
@@ -669,6 +719,26 @@ function openDeleteConfirm(sectionId, task) {
       }
       await refresh();
       toast('已删除');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
+}
+
+function openSectionDeleteConfirm(sid) {
+  const sec = (state.sections || []).find((s) => s.id === sid);
+  const name = sec ? sec.name : `#${sid}`;
+  const count = sec ? (sec.total || 0) : 0;
+  const body = `<div class="form">
+    <p>将删除分区「${esc(name)}」，并连同 <b>${count}</b> 条任务一起删除，不可恢复。</p>
+  </div>`;
+  const wrap = openModal(modalShell('🗑️ 删除分区', body, '<button class="btn btn-danger" id="dsec">🗑️ 删除</button>', 420));
+  wrap.querySelector('#dsec').addEventListener('click', async () => {
+    try {
+      const res = await api('DELETE', `/api/sections/${sid}`);
+      closeModal();
+      await refresh();
+      toast(`已删除分区，连同 ${(res && res.deleted_tasks) || 0} 条任务`);
     } catch (e) {
       toast(e.message, true);
     }
@@ -957,6 +1027,10 @@ function bindEvents() {
       await moveSectionToTail(sid);
       return;
     }
+    if (act === 'del-sec') {
+      openSectionDeleteConfirm(sid);
+      return;
+    }
 
     if (act === 'reveal') {
       if (state.revealed[sid]) {
@@ -1012,6 +1086,36 @@ function bindEvents() {
         state.bark = await api('PUT', '/api/bark', { enabled: !(state.bark && state.bark.enabled) });
         render();
         toast(state.bark.enabled ? '已启用完成推送' : '已关闭完成推送');
+      } catch (err) {
+        toast(err.message, true);
+      }
+    } else if (btn.dataset.act === 'bind-add') {
+      const input = $('#bindInput');
+      const v = input ? input.value.trim().replace(/^\[(.*)\]$/, '$1') : '';
+      if (!v) return;
+      const draft = state.bindDraft || [];
+      if (draft.indexOf(v) < 0) draft.push(v);
+      state.bindDraft = draft;
+      render();
+    } else if (btn.dataset.act === 'bind-del') {
+      const i = Number(btn.dataset.i);
+      const draft = (state.bindDraft || []).slice();
+      draft.splice(i, 1);
+      state.bindDraft = draft;
+      render();
+    } else if (btn.dataset.act === 'bind-save') {
+      try {
+        const res = await api('PUT', '/api/settings/bind', { binds: state.bindDraft || [] });
+        const fails = res.failures || {};
+        const failText = Object.keys(fails).map((k) => `${k}：${fails[k]}`).join('；');
+        if (res.ok) {
+          toast(failText ? '部分地址失败：' + failText : '监听地址已更新并生效', !!failText);
+        } else {
+          toast('保存失败，' + (res.error || '未知原因') + (failText ? '：' + failText : ''), true);
+        }
+        state.settings = await api('GET', '/api/settings');
+        state.bindDraft = (state.settings.bind || ['127.0.0.1']).slice();
+        render();
       } catch (err) {
         toast(err.message, true);
       }
@@ -1088,6 +1192,7 @@ async function init() {
   }
   render();
   connectSSE();
+  if (location.hash === '#settings') openSettings();
 }
 
 init();

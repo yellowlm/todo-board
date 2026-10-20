@@ -6,8 +6,8 @@
 - **README文件由DeepSeek生成，他满嘴黑话主包也没办法，管也管不动骂也骂不好，请大佬们找DeepSeek读然后解释给你们听。**
 - **遇事请大佬们直接咨询DeepSeek，写issue应该没卵用，主包比较懒可能不太看😭😭😭。**
 
-一个本地优先的待办工具：Windows 桌面壳（Go + WebView2）+ 内嵌 HTTP 服务 + SQLite。
-既可作为常驻托盘的桌面小工具使用，也向 AI 代理提供一套可编程的任务接口。
+一个本地优先、**给人和 AI Agent 共用**的待办看板：Windows 桌面壳（Go + WebView2）+ 内嵌 HTTP 服务 + SQLite。
+人和 Agent 读写的是同一份数据——你在界面上勾选完成，Agent 通过 API 或 MCP 看到的就是同一条；反之亦然。
 
 ## 功能
 
@@ -18,7 +18,8 @@
 - 每个分区四种过滤：未完成 / 处理中 / 已完成 / 全部，选择会被记住
 - 顶部概览：总数 / 未完成 / 处理中 / 已完成 / 已逾期，配 3/4 圆环完成率
 - 任务详情：Markdown 渲染；编辑与新建都在独立窗口中完成
-- 分区管理：auth key 打码显示、查看、改名、改 key；每个分区独立的「完成推送」开关
+- 分区标题显示 `#<id>`（便于在 MCP / API 里指定分区）
+- 分区管理：auth key 打码显示、查看、改名、改 key、删除分区（连同其任务，需二次确认）；每个分区独立的「完成推送」开关
 - 托盘常驻：左键恢复窗口，右键菜单为「打开主界面 / 开机自启动 / 退出程序」；不显示任务栏图标
 - 关闭按钮即退出程序；「—」最小化到托盘；单实例运行
 - 窗口位置与尺寸自动记忆（含拔掉副屏后的屏外兜底），最小客户区 560×140
@@ -33,6 +34,7 @@
 
 ### 外部 API（给 AI 代理）
 
+- Agent 可以完全通过 API 操作看板：列任务、新建、改标题/描述/截止、切换三态、删除，全程不需要人点界面
 - 请求头 `X-Auth-Key` 认证，作用域严格限定在该 key 所属分区
 - 支持任务查询 / 新建 / 修改 / 改状态 / 删除，截止时间可空
 - 完整接口、字段与错误码见 [`skills/todo-board/SKILL.md`](skills/todo-board/SKILL.md)
@@ -49,6 +51,65 @@
 - `PUT /api/sections/order` 保存顺序，桌面与浏览器版都支持拖动排序
 - 排序写入 `sections.sort_order` 并在增删分区后保持连续，变更通过 SSE 广播
 
+## 给 AI Agent 用的部分
+
+看板从一开始就按「Agent 也要读写」来设计，目前提供三样东西，各管一段：
+
+- **英文 Skill：`skills/todo-board/SKILL.md`** —— Agent 读写任务的入口文档，写明基址、`X-Auth-Key` 认证、
+  各端点、状态取值（`open` / `doing` / `done`）、错误码与示例，Agent 照着调即可，不需要人教。
+- **MCP：`mcp/todoboard-pager`（产物 `todoboard-pager.exe`）** —— 给 AionUI 这类 MCP 宿主的盯盘工具。
+  启动时绑定「分区 + 该分区 KEY + 刷新间隔」，之后看板一有变化就在会话里发通知（新增任务逐条列标题，删除带
+  `[删除]` 前缀）。共 4 个工具：`start_monitor` / `stop_monitor` / `list_tasks` / `set_status`；不写任何本地文件。
+- **内置 HTTP API** —— `X-Auth-Key` 按分区隔离，Agent 可增删改查任务、改三态；还可以订阅 `/api/events`
+  的 SSE 事件流做实时联动。分区之间的数据互不可见。
+
+三者都不需要额外的服务端：桌面程序自己就是那个服务，Agent 连本机 `127.0.0.1:17321` 即可。
+## 操作细节
+
+不用记术语，照着做就行。
+
+**窗口**
+
+- 按住标题栏拖动可以移动窗口；鼠标移到窗口四边或四角 6 像素以内，光标会变成缩放箭头，按住拖动即可改大小。
+- 窗口的位置和大小会自动记住，下次打开回到原处；屏幕分辨率变了也不会跑到看不见的地方。
+- 窗口最小可以缩到客户区 560×140。
+- 点「✕」是直接退出程序；点「—」是最小化到托盘（不退出）。托盘图标右键里有「开机自启动」。
+
+**分区**
+
+- 按住分区标题栏可以拖动排序；每个分区标题栏还有一个「⤓」把该分区一键挪到最后。
+- 点分区标题栏可以折叠 / 展开该分区。
+- 分区标题栏里分区名后面的 `#数字` 是这个分区的 ID（配 MCP 或调 API 时会用到）。
+- 分区标题栏的「➕」就是新建任务（只有加号，没有文字）。
+
+**任务**
+
+- 打勾圆圈：**左键 = 标记完成，右键 = 标记处理中**；已经是处理中的再右键会回到未完成。已完成的行有「撤销」按钮。
+- 点任务标题进入详情，描述按 Markdown 渲染；详情里可点「编辑描述」。
+- 截止时间可以留空，不填就显示「未设截止」。
+- 每条任务都可以删除（删除前会确认）。
+
+**分区管理（标题栏的图层图标）**
+
+- 可以新建分区、改分区名、改认证密钥（auth key）、删除分区。
+- 删除分区会把该分区下的所有任务一起删掉，会先弹确认框并写明要删多少条任务。
+
+**浏览器版**
+
+- 浏览器打开 `http://127.0.0.1:17321/` 就能用（和桌面版同一份数据）。
+- 分区按多列瀑布流排布：1280 宽四列、1600 宽五列，窄屏自动减列。
+- 点任务行会展开成卡片；分区和任务都是滚到底自动加载更多；别人改了数据，页面会自动刷新。
+
+**完成推送（Bark）**
+
+- 设置页填三项：服务器地址、设备 Key、图标 URL（可留空），填完可以先「发送测试推送」验证。
+- 每个分区有一个「完成推送」开关（分区管理里），任务本身还可以单独选「继承分区 / 开 / 关」。
+
+**MCP（给 AI 助手用）**
+
+- 按上面「MCP」一节填好注册 JSON；启动时 Agent 需要向你要三样东西：分区（名称或 `#id`）、该分区的 KEY、刷新间隔（默认 60 秒，最小 1 秒）。
+- 一共 4 个工具：开始盯盘、停止盯盘、列任务、改状态。
+- 看板有变化会收到通知，格式是「`[通知] 看板有变化：共 N 条，新增 M 条`」，后面逐条列出新增任务标题；删除的任务会带「[删除]」前缀。
 ## 安装 / 运行
 
 要求：Windows 10/11，且已安装 **Microsoft Edge WebView2 Runtime**（Win11 默认自带）。
@@ -85,14 +146,104 @@ build.bat
 - **Bark**：需自行填写服务器地址（如 `https://bark.example.com`）与设备 Key；图标 URL 可留空
 - **开机自启动**：写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，可在设置页开关
 
+## MCP：todoboard-pager（AionUI 常驻盯盘）
+
+`Dev\build\todoboard-pager.exe`（源码 `mcp/todoboard-pager/`）是一个 stdio MCP 服务，用于在 AionUI 会话里
+常驻盯一个分区：看板有变化就把新增任务标题推给当前会话（团队与单聊都适用）。
+
+注册示例（AionUI 或任意 MCP 客户端）：
+
+```json
+{
+  "mcpServers": {
+    "todoboard-pager": {
+      "command": "<项目目录>\\Dev\\build\\todoboard-pager.exe"
+    }
+  }
+}
+```
+
+四个环境变量 `AIONUI_BASE_URL` / `AIONUI_RUNTIME_TOKEN` / `AIONUI_USER_ID` / `AIONUI_CONVERSATION_ID`
+由 AionUI 的 agent 宿主注入，不必手填；缺失时 `initialize` / `tools/list` 仍可正常应答，只有「盯盘 / 发消息」
+会返回工具错误，进程不会退出。
+
+启动必需三项：**分区（名称或 `#<id>`）、该分区的 KEY、刷新间隔秒（默认 60，最小 1）**。
+
+| 工具 | 参数 | 说明 |
+| --- | --- | --- |
+| `start_monitor` | `{section, key, interval_sec}` | 开始盯盘（非阻塞） |
+| `stop_monitor` | `{}` | 停止盯盘 |
+| `list_tasks` | `{status?}` | `open` / `doing` / `done` / `all` |
+| `set_status` | `{task_id, status}` | `open` / `doing` / `done` |
+
+通知形如 `[通知] 看板有变化：共 N 条，新增 M 条`，随后逐条列出全部新增任务标题；被删除的任务带 `- [删除] 标题` 前缀，
+只改描述/截止等也算变化。
+
+**不写任何本地文件**（无快照、无状态文件），进程或团队重建后由 Agent 重新 `start_monitor` 即可。
+日志默认关闭，只有设置 `TODOBOARD_DEBUGE`（文件或目录路径）时才写。
+
+配套文档：外部 API 说明 `skills/todo-board/SKILL.md`（含 MCP 一节）、专用 Agent 系统提示词
+`agents/todo-board-watcher.md`。
+
 ## API 概览
 
-| 分组 | 路径 | 说明 |
-| --- | --- | --- |
-| 代理接口 | `/api/tasks`、`/api/tasks/{id}`、`/api/tasks/{id}/status`、`/api/tasks/{id}/done`、`/api/section` | 需 `X-Auth-Key`，仅作用本分区 |
-| 桌面 / 网页 | `/api/board`、`/api/sections`、`/api/sections/order`、`/api/web/sections`、`/api/web/tasks`、`/api/web/stats` | 本机使用，无鉴权 |
-| 设置 | `/api/settings`、`/api/bark`、`/api/bark/test` | 设置页与推送配置 |
-| 实时 | `/api/events` | SSE 事件流 |
+#### 代理接口（需 X-Auth-Key）
+
+| 路径 | 说明 |
+| --- | --- |
+| `GET /api/section` | 当前 key 所属分区及其计数 |
+| `GET /api/tasks` | 列任务，支持 `status` / `done` / `section` 过滤 |
+| `POST /api/tasks` | 新建任务（一律为未完成） |
+| `PUT /api/tasks/{id}` | 修改标题 / 描述 / 截止 / 推送覆盖 |
+| `POST /api/tasks/{id}/status` | 改状态：`open` / `doing` / `done` |
+| `POST /api/tasks/{id}/done` | 完成或撤销（`{"done":true/false}`） |
+| `DELETE /api/tasks/{id}` | 删除任务 |
+
+#### 桌面与网页
+
+| 路径 | 说明 |
+| --- | --- |
+| `GET /api/health` | 健康检查 |
+| `GET /api/board` | 看板全量数据（分区 + 任务 + 计数） |
+| `GET /api/sections` | 分区列表（含每个分区的计数） |
+| `POST /api/sections` | 新建分区（可带 key，留空随机） |
+| `PUT /api/sections/{id}` | 改名 / 开关该分区的完成推送 |
+| `DELETE /api/sections/{id}` | 删除分区（连同其任务，返回删除条数） |
+| `PUT /api/sections/order` | 保存分区排序 |
+| `GET /api/sections/{id}/key` | 查看该分区明文 key |
+| `PUT /api/sections/{id}/key` | 修改该分区 key |
+| `POST /api/board/sections/{sid}/tasks` | 新建任务 |
+| `PUT /api/board/sections/{sid}/tasks/{tid}` | 修改任务 |
+| `DELETE /api/board/sections/{sid}/tasks/{tid}` | 删除任务 |
+| `POST /api/board/sections/{sid}/tasks/{tid}/status` | 改状态 |
+| `POST /api/board/sections/{sid}/tasks/{tid}/done` | 完成 / 撤销 |
+| `GET /api/web/sections` | 浏览器版分区分页（`limit` / `offset`） |
+| `GET /api/web/tasks` | 浏览器版任务分页（`section` / `status` / `limit` / `offset`） |
+| `GET /api/web/stats` | 浏览器版顶部概览计数 |
+| `POST /api/window/hide` | 最小化到托盘 |
+| `POST /api/window/close` | 退出程序 |
+| `POST /api/window/drag` | 拖动窗口 |
+| `POST /api/window/resize/start` | 开始缩放（`edge` / `target`） |
+| `POST /api/window/resize/end` | 结束缩放 |
+| `GET /api/editor/context` | 独立编辑窗口读取任务 |
+| `POST /api/editor/open` | 打开编辑窗口 |
+| `POST /api/editor/ready` | 编辑窗口就绪（显示窗口并设标题） |
+
+#### 设置与推送
+
+| 路径 | 说明 |
+| --- | --- |
+| `GET /api/settings` | 版本 / 接口地址 / 数据文件 / 自启状态 |
+| `POST /api/settings/autostart` | 开关开机自启动 |
+| `GET /api/bark` | 推送配置（key 只返回掩码） |
+| `PUT /api/bark` | 保存推送配置 |
+| `POST /api/bark/test` | 发送测试推送 |
+
+#### 实时
+
+| 路径 | 说明 |
+| --- | --- |
+| `GET /api/events` | SSE 事件流，任何来源的增删改都会推送 |
 
 详细字段、状态取值与错误码见 `skills/todo-board/SKILL.md`。
 
@@ -113,7 +264,9 @@ Code/
     editor.html editor.js        独立编辑窗口
     web.html web.css web.js      浏览器版
     icon.png icon.ico            图标
-  skills/todo-board/SKILL.md     外部 API 说明（给 AI 代理）
+  mcp/todoboard-pager/          AionUI 常驻盯盘 MCP（stdio JSON-RPC）
+  agents/todo-board-watcher.md  盯盘专用 Agent 系统提示词
+  skills/todo-board/SKILL.md    外部 API 说明（给 AI 代理）+ MCP 说明
   build.bat          构建脚本
 Dev/
   design/  build/    设计稿与构建产物（不随源码发布）

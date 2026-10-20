@@ -147,3 +147,46 @@ Errors are `{"error": "<message>"}` with a Chinese message:
   and filter locally.
 - New tasks are always `open`; `status` / `done` are ignored on create.
 - Changes made here are pushed to the open app window immediately (SSE).
+
+## MCP: todoboard-pager
+
+A companion MCP server (`Dev\build\todoboard-pager.exe`, source in `mcp/todoboard-pager/`) that keeps
+watching one section inside an AionUI session and pushes a notice to the current conversation whenever
+the board changes. Works both in a team member slot and in a one-to-one conversation.
+
+**Required before starting** (ask the user, never guess):
+
+1. the section (name or numeric id — the `#<id>` shown next to the section title),
+2. that section's auth key,
+3. the poll interval in seconds (60 recommended, minimum 1).
+
+**Tools (4):**
+
+| Tool | Arguments | Notes |
+| --- | --- | --- |
+| `start_monitor` | `{section, key, interval_sec}` | non-blocking; sends `[通知]` on changes |
+| `stop_monitor` | `{}` | stops watching |
+| `list_tasks` | `{status?}` | `status` = `open` / `doing` / `done` / `all` |
+| `set_status` | `{task_id, status}` | `status` = `open` / `doing` / `done` |
+
+**Notification format** — the headline, then every newly added task title, one per line, never truncated:
+
+```
+[通知] 看板有变化：共 N 条，新增 M 条
+
+- 任务标题 1
+- 任务标题 2
+```
+
+If something changed but **nothing was newly added**, the notice carries an extra section instead:
+`另有 N 条变更：` followed by the changed task titles, one per line.
+
+The MCP writes **no local files** (no snapshots, no state file); after a restart or a team rebuild the
+agent simply calls `start_monitor` again.
+
+**MCP vs HTTP API**: use the HTTP API above for one-off reads/writes; use the MCP only when you need to
+keep watching a board and push changes into the conversation.
+
+**Runtime prerequisites**: AionUI injects `AIONUI_BASE_URL`, `AIONUI_RUNTIME_TOKEN`, `AIONUI_USER_ID`,
+`AIONUI_CONVERSATION_ID`; the server exits with a message on stderr if any is missing. Logging is off by
+default — it only writes a log when `TODOBOARD_DEBUGE` points to a file or directory.

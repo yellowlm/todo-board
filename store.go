@@ -806,3 +806,33 @@ func (s *Store) SetBarkOverride(sectionID, id int64, override string) (Task, err
 	}
 	return s.TaskByID(sectionID, id)
 }
+
+// DeleteSection 硬删除分区，并在同一事务内显式删除其全部任务（不依赖外键级联）。
+// 返回被删除的任务数。
+func (s *Store) DeleteSection(id int64) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`DELETE FROM tasks WHERE section_id = ?`, id)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	if n, err := res.RowsAffected(); err == nil {
+		deleted = int(n)
+	}
+	res2, err := tx.Exec(`DELETE FROM sections WHERE id = ?`, id)
+	if err != nil {
+		return 0, err
+	}
+	if n, err := res2.RowsAffected(); err == nil && n == 0 {
+		return 0, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}

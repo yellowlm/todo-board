@@ -117,7 +117,9 @@ svg.i.sm { width: 14px; height: 14px; }
 .detailview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 .section {
-  border: 1px solid var(--border); border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--sec-color, var(--border-strong));
+  border-radius: var(--radius-card);
   background: var(--surface); overflow: hidden;
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
@@ -158,21 +160,29 @@ svg.i.sm { width: 14px; height: 14px; }
 /* ---------- 任务行 ---------- */
 .task {
   position: relative;
-  display: grid; grid-template-columns: auto 1fr auto;
-  gap: 12px; align-items: center;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "check main"
+    "actions actions";
+  column-gap: 12px; row-gap: 8px;
+  align-items: center;
   padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: var(--sec-soft, transparent);
   transition: background .15s;
 }
+.task .check { grid-area: check; margin-top: 1px; }
+.task .task-main { grid-area: main; min-width: 0; }
+.task .actions { grid-area: actions; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
 .task:last-child { border-bottom: 0; }
 .task::before {
   content: ""; position: absolute; left: 0; top: 0; bottom: 0;
-  width: 0; background: var(--primary); transition: width .15s;
+  width: 3px; background: var(--sec-color, var(--primary)); transition: width .15s, filter .15s;
 }
-.task:hover { background: var(--surface-2); }
-.task:hover::before { width: 3px; }
-.task.selected { background: var(--primary-soft); }
-.task.selected::before { width: 3px; }
-.task.done { background: var(--surface); }
+.task:hover { background: var(--sec-hover, var(--surface-2)); }
+.task:hover::before { filter: brightness(1.2); }
+.task.selected { background: var(--sec-active, var(--primary-soft)); }
+.task.done { background: var(--sec-soft, var(--surface)); }
 
 .check {
   width: 22px; height: 22px; border-radius: 50%;
@@ -187,15 +197,21 @@ svg.i.sm { width: 14px; height: 14px; }
 .task-meta.doing { color: var(--info); }
 .task-meta.doing .tag { background: var(--info-soft); color: var(--info); }
 
+.task-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.task-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .task-title {
   font-size: 14px; font-weight: 600; color: var(--text);
-  cursor: pointer; transition: color .15s; word-break: break-word;
+  cursor: pointer; transition: color .15s;
+  flex: 1 1 auto; min-width: 0;
+  white-space: normal; word-break: break-word; overflow-wrap: anywhere;
 }
 .task-title:hover { color: var(--primary); }
 .task.done .task-title { color: var(--text-3); text-decoration: line-through; }
 .task-meta {
-  margin-top: 3px; font-size: 12px; color: var(--text-2);
-  display: grid; grid-template-columns: 74px auto; align-items: center; column-gap: 8px;
+  font-size: 12px; color: var(--text-2);
+  flex: 1 1 auto; min-width: 0; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  display: inline-flex; align-items: center; gap: 6px;
 }
 .task-meta .tag { justify-self: start; padding: 1px 6px; border-radius: 4px; font-size: 11px; background: var(--primary-soft); color: var(--primary); white-space: nowrap; }
 .task-meta .mdate { white-space: nowrap; }
@@ -207,7 +223,7 @@ svg.i.sm { width: 14px; height: 14px; }
 .task-meta.due-soon { color: var(--info); }
 .task-meta.due-soon .tag { background: var(--info-soft); color: var(--info); }
 
-.actions { display: flex; gap: 6px; align-items: center; }
+.actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .rowbtn {
   display: inline-flex; align-items: center; gap: 4px;
   height: 28px; padding: 0 10px; border-radius: var(--radius-btn);
@@ -226,7 +242,8 @@ svg.i.sm { width: 14px; height: 14px; }
 /* ---------- 分区分组 ---------- */
 .section-head {
   display: flex; align-items: center; gap: 10px;
-  padding: 12px 16px; background: #262C35;
+  padding: 12px 16px;
+  background: linear-gradient(90deg, var(--sec-soft, transparent) 0%, #262C35 32%);
   border-bottom: 1px solid var(--border);
   cursor: pointer; user-select: none; -webkit-user-select: none;
 }
@@ -411,3 +428,37 @@ svg.i.sm { width: 14px; height: 14px; }
 /* Bark 卡片：按钮行贴卡片底部、与输入项同宽右对齐 */
 .secrow.bark-card { grid-template-columns: 1fr; }
 .bark-actions { display: flex; justify-content: flex-end; gap: 8px; width: 100%; }
+
+/* 分区 ID 标识 */
+.section-id { font-size: 11px; font-weight: 500; color: var(--text-3); }
+
+/* 分区管理卡片：上下两行（名称+密钥 / 按钮整行），任何宽度都不竖排 */
+.secrow.secrow-card { grid-template-columns: minmax(0, 1fr); }
+.secrow-card .secrow-head {
+  display: flex; align-items: baseline; gap: 10px;
+  min-width: 0; white-space: nowrap;
+}
+.secrow-card .secrow-name {
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.secrow-card .secrow-key {
+  flex: 1 1 auto; min-width: 0; margin-top: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.secrow-card .actions {
+  width: 100%; flex-wrap: wrap; justify-content: flex-end;
+}
+.secrow-card .key-input { max-width: 100%; }
+
+/* 监听地址卡片 */
+.bind-local { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
+.bind-list { display: flex; flex-direction: column; gap: 6px; }
+.bind-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-btn); background: var(--surface); }
+.bind-row .key { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bind-ok { font-size: 11px; color: var(--success); white-space: nowrap; }
+.bind-add { display: flex; gap: 8px; align-items: center; }
+.bind-add .input { flex: 1; }
+.warn-note { font-size: 12px; color: var(--warn); background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.3); border-radius: var(--radius-btn); padding: 6px 8px; }
+
+.bind-bad { font-size: 11px; color: var(--danger); white-space: nowrap; }
