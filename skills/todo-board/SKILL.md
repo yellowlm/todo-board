@@ -147,8 +147,10 @@ Errors are `{"error": "<message>"}` with a Chinese message:
 ## Notes
 
 - All responses are UTF-8 JSON; send `Content-Type: application/json`.
-- There is no delete for sections, and no server-side search: fetch `/api/tasks`
-  and filter locally.
+- Sections can be deleted, but only through the web-side endpoint `DELETE /api/sections/{id}`
+  (it is not part of the `X-Auth-Key` agent API). Deleting a section also deletes every task in it
+  and returns how many were removed; deleting the same id twice returns `404`.
+- There is still no server-side search: fetch `/api/tasks` and filter locally.
 - New tasks are always `open`; `status` / `done` are ignored on create.
 - Changes made here are pushed to the open app window immediately (SSE).
 
@@ -163,6 +165,9 @@ the board changes. Works both in a team member slot and in a one-to-one conversa
 1. the section (name or numeric id — the `#<id>` shown next to the section title),
 2. that section's auth key,
 3. the poll interval in seconds (60 recommended, minimum 1).
+
+The section may be given by name, numeric id, or `#<id>`; monitoring tracks the **resolved section id**,
+so it keeps notifying after the section is renamed.
 
 **Tools (4):**
 
@@ -192,5 +197,7 @@ agent simply calls `start_monitor` again.
 keep watching a board and push changes into the conversation.
 
 **Runtime prerequisites**: AionUI injects `AIONUI_BASE_URL`, `AIONUI_RUNTIME_TOKEN`, `AIONUI_USER_ID`,
-`AIONUI_CONVERSATION_ID`; the server exits with a message on stderr if any is missing. Logging is off by
-default — it only writes a log when `TODOBOARD_DEBUGE` points to a file or directory.
+`AIONUI_CONVERSATION_ID`. The server does **not** validate them at startup: `initialize` and `tools/list`
+work without them. Only actions that actually send a message (`start_monitor`, lease renewal) return a tool
+error naming the missing variables, and the process keeps running. Logging is off by default — it only
+writes a log when `TODOBOARD_DEBUGE` points to a file or directory.

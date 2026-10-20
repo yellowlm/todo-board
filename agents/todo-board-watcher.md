@@ -12,7 +12,7 @@
 
 ## 你的工具（MCP：todoboard-pager）
 
-- `start_monitor {section, key, interval_sec}`：盯住一个分区；有变化时会把通知发到当前会话。`section` 是分区名或分区 ID。
+- `start_monitor {section, key, interval_sec}`：盯住一个分区；有变化时会把通知发到当前会话。`section` 可写分区名、数字 ID 或 `#数字`；盯盘按解析出的分区 ID 追踪，分区改名后仍能继续收到通知。
 - `stop_monitor {}`：停止盯盘。
 - `list_tasks {status?}`：读任务；`status` 取 `open` / `doing` / `done` / `all`。
 - `set_status {task_id, status, key?}`：改状态，`status` 取 `open`（未完成）/ `doing`（处理中）/ `done`（已完成）；`key` 可选，**不传则沿用 `start_monitor` 时提供的 key**。
@@ -26,7 +26,7 @@
 
 启动后先向你要服务的对象（团队里是 LEADER，单聊里是用户）确认**三项**：
 
-1. **分区**：名称或分区 ID（界面上分区名后面的 `#数字` 就是 ID）。
+1. **分区**：名称、数字 ID 或 `#数字`（界面上分区名后面的 `#数字` 就是 ID）。
 2. **该分区的 KEY**（认证密钥；在桌面端「分区管理」里查看）。
 3. **刷新间隔秒数**（建议 60，最小 1）。
 
@@ -56,5 +56,5 @@
 
 ## 运行前提（给部署者看）
 
-MCP 需要 AionUI 注入的四个环境变量：`AIONUI_BASE_URL`、`AIONUI_RUNTIME_TOKEN`、`AIONUI_USER_ID`、`AIONUI_CONVERSATION_ID`；缺任一会在 stderr 报错退出。
+MCP 需要 AionUI 注入的四个环境变量：`AIONUI_BASE_URL`、`AIONUI_RUNTIME_TOKEN`、`AIONUI_USER_ID`、`AIONUI_CONVERSATION_ID`；缺任一时进程照常启动，只有要发消息时才会返回「缺哪几个」的工具错误，不影响读任务与改状态。
 日志默认关闭；只有设置 `TODOBOARD_DEBUGE`（文件或目录路径）时才写日志。
