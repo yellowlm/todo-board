@@ -560,7 +560,7 @@ function renderSettings() {
           <input class="input" id="bindInput" placeholder="如 0.0.0.0、::、::1、192.168.1.5、host.example.com">
           <button class="rowbtn" data-act="bind-add">➕ 添加</button>
         </div>
-        <div class="secrow-key">说明：<code>0.0.0.0</code> 绑定全部 IPv4 网卡；<code>::</code> 绑定全部 IPv6 网卡（两者互不冲突，可同时添加）；<code>::1</code> 只听 IPv6 环回；填域名则按解析出的地址绑定。</div>
+        <div class="secrow-key">说明：<code>::</code> 只绑 IPv6，<code>0.0.0.0</code> 只绑 IPv4；<b>要双栈就把两条都加上</b>。<code>::1</code> 仅 IPv6 环回；填域名则按解析出的地址绑定。</div>
         <div class="secrow-key">当前生效：${esc(listening.join('、') || '（无）')} · 端口 ${port}</div>
       </div>
       <div class="bark-actions"><button class="rowbtn" data-act="bind-save">💾 保存并生效</button></div>

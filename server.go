@@ -277,9 +277,9 @@ func (s *Server) listenOne(bind string) (boundListener, error) {
 	network := "tcp"
 	if ip := net.ParseIP(bind); ip != nil {
 		if ip.To4() != nil {
-			network = "tcp4"
+			network = "tcp4" // 0.0.0.0 / 具体 IPv4：仅 IPv4
 		} else {
-			network = "tcp6"
+			network = "tcp6" // :: / ::1 等：仅 IPv6
 		}
 	} else {
 		ips, err := net.LookupIP(bind)
@@ -1673,6 +1673,7 @@ func addrConflicts(a, b string) bool {
 	}
 	ipA, ipB := net.ParseIP(a), net.ParseIP(b)
 	isV4 := func(ip net.IP) bool { return ip != nil && ip.To4() != nil }
+	// 通配地址只与「同类」具体地址抢端口：0.0.0.0 vs IPv4、:: vs IPv6
 	isV6 := func(ip net.IP) bool { return ip != nil && ip.To4() == nil }
 	if a == "0.0.0.0" {
 		return isV4(ipB)
