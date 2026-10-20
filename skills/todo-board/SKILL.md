@@ -11,6 +11,10 @@ holding a key can only see and modify tasks in that section.
 
 Base URL: `http://127.0.0.1:17321` (the port is configurable with `-port`).
 
+By default the service binds only the loopback address. If extra listen addresses are added in the
+desktop settings (e.g. `0.0.0.0` for IPv4, `::` for IPv6, or a hostname), the same API is also
+reachable on those addresses; authentication is still per-section via `X-Auth-Key`.
+
 ## Authentication
 
 Send the section's key in the header on every request:
