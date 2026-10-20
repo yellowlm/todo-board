@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>待办看板</title>
+<link rel="stylesheet" href="web.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+</svg>
+
+<header class="topbar">
+  <div class="app"><img src="icon.png" alt="">待办看板</div>
+  <div class="spacer"></div>
+  <button class="iconbtn" id="btnSettings" title="设置" aria-label="设置"><svg class="i sm"><use href="#i-settings"/></svg></button>
+</header>
+
+<section class="overview">
+  <div class="ov-head">
+    <div class="ov-title">📊 今日概览</div>
+    <div class="ov-sub" id="ovDate"></div>
+  </div>
+  <div class="ov-group">
+    <div class="ov-stats">
+      <div class="stat"><span class="n" id="cTotal">0</span><span class="l"><span class="em">📋</span>总数</span></div>
+      <div class="stat"><span class="n" id="cOpen">0</span><span class="l"><span class="em">⏳</span>未完成</span></div>
+      <div class="stat doing"><span class="n" id="cDoing">0</span><span class="l"><span class="em">🔧</span>处理中</span></div>
+      <div class="stat done"><span class="n" id="cDone">0</span><span class="l"><span class="em">✅</span>已完成</span></div>
+      <div class="stat late"><span class="n" id="cOverdue">0</span><span class="l"><span class="em">⚠️</span>已逾期</span></div>
+    </div>
+    <div class="ov-progress">
+      <div class="ring">
+        <svg class="ring-svg" viewBox="0 0 46 46">
+          <path class="ring-track" d="M9.21 36.79 A19.5 19.5 0 1 1 36.79 36.79"/>
+          <path class="ring-fill" id="ringFill" d=""/>
+        </svg>
+        <span class="ring-num" id="ringNum">0%</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<main class="board" id="board"></main>
+<div class="sentinel" id="sentinel"></div>
+<div class="pagefoot" id="pagefoot"></div>
+
+<div class="modal" id="settingsModal" hidden>
+  <div class="window">
+    <div class="titlebar">
+      <div class="app">⚙️ 设置</div>
+      <div class="spacer"></div>
+      <button class="winbtn close" id="settingsClose" title="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form">
+        <div class="formrow">
+          <div>
+            <div class="secrow-name">🔔 任务完成推送（Bark）</div>
+            <div class="secrow-key">任务标记完成时推送到手机；失败不影响任务状态</div>
+          </div>
+          <button class="switch" id="barkEnabled" role="switch" aria-checked="false"></button>
+        </div>
+        <div class="field"><label>服务器地址</label><input class="input" id="barkServer" placeholder="https://bark.example.com"></div>
+        <div class="field"><label>设备 Key</label><input class="input" id="barkKey" type="password"></div>
+        <div class="field"><label>图标 URL（可留空）</label><input class="input" id="barkIcon" placeholder="留空则不带图标"></div>
+        <div class="secrow-key" id="barkHint"></div>
+        <div class="bark-actions">
+          <button class="btn" id="barkTest">📨 发送测试推送</button>
+          <button class="btn btn-primary" id="barkSave">保存</button>
+        </div>
+        <div class="secrow-key" id="versionInfo"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<script src="web.js"></script>
+</body>
+</html>

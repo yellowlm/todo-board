@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>编辑任务</title>
+<link rel="stylesheet" href="ui.css">
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></symbol>
+</svg>
+
+<div class="window">
+  <div class="titlebar" id="titlebar">
+    <div class="app"><span id="edHeader">✏️ 编辑任务</span></div>
+    <div class="spacer"></div>
+    <button class="winbtn close" id="btnClose" title="关闭"><svg class="i sm"><use href="#i-close"/></svg></button>
+  </div>
+
+  <div class="detailview">
+    <div class="md" style="flex:1">
+      <div class="form" style="padding:0">
+        <div class="field">
+          <label>📝 标题</label>
+          <input class="input" id="edTitle" placeholder="要做什么？">
+        </div>
+        <div class="field">
+          <label>📄 详细描述（Markdown）</label>
+          <textarea class="textarea" id="edDesc" placeholder="支持 Markdown：标题、列表、代码块…"></textarea>
+        </div>
+        <div class="field">
+          <label>📅 截止时间（可留空）</label>
+          <input class="input" id="edDue" type="datetime-local">
+        </div>
+        <div class="field">
+          <label>🔔 完成推送</label>
+          <select class="input" id="edBark">
+            <option value="inherit">继承分区</option>
+            <option value="on">开（完成时推送）</option>
+            <option value="off">关（完成时不推送）</option>
+          </select>
+        </div>
+        <div class="secrow-key" id="edSection"></div>
+      </div>
+    </div>
+    <div class="foot">
+      <button class="btn" id="btnCancel">取消</button>
+      <button class="btn btn-primary" id="btnSave">✅ 保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="editor.js"></script>
+</body>
+</html>

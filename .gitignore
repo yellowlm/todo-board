@@ -1,0 +1,42 @@
+# 构建产物（输出到项目根的 ../Dev）
+build/
+dist/
+*.zip
+*.exe
+
+# 运行态内容禁止提交：密钥、证书、真实配置、日志
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+*.pem
+logs/
+*.log
+*.pid
+
+# 真实配置（示例 config.example.* 会被下面的规则重新纳入）
+config.toml
+config.json
+!*.example.*
+!*.sample.*
+
+# 编辑器 / 操作系统噪声
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 运行态数据 / 本机配置（数据库、状态、Bark 配置）
+*.db
+*.db-shm
+*.db-wal
+bark.json
+window.json
+*.ico.tmp
+
+# 临时 / 截图
+*.tmp
+*.bak
+*.png.tmp
+edgeprof/
