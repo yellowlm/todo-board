@@ -369,6 +369,7 @@ func (s *Store) SectionByKey(key string) (Section, error) {
 
 func (s *Store) ResolveSection(q string) (Section, error) {
 	q = strings.TrimSpace(q)
+	q = strings.TrimSpace(strings.TrimPrefix(q, "#"))
 	if q == "" {
 		return Section{}, ErrNoSection
 	}

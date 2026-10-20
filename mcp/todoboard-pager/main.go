@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -489,6 +490,13 @@ func buildNotice(list taskListResponse, added []task, changed, deleted []string)
 
 var monitorStop chan struct{}
 
+// normalizeSection 允许 "4" / "#4" / "  #4 " / 分区名 等写法。
+func normalizeSection(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(strings.TrimPrefix(s, "#"))
+	return s
+}
+
 func currentTarget() string {
 	return targetKind + "|" + targetTeam + "|" + targetSlot
 }
@@ -512,8 +520,10 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 	go func() {
 		ticker := time.NewTicker(time.Duration(interval) * time.Second)
 		defer ticker.Stop()
+		// 一律用启动时解析出的分区 ID 轮询：分区改名后依然能盯
+		pollSection := strconv.FormatInt(sectionID, 10)
 		poll := func() {
-			list, raw, err := boardTasks(section, key, "")
+			list, raw, err := boardTasks(pollSection, key, "")
 			if err != nil {
 				dbg("轮询失败: %v", err)
 				return
@@ -711,7 +721,7 @@ func callTool(name string, raw json.RawMessage) (string, bool) {
 		if err := json.Unmarshal(raw, &in); err != nil {
 			return "参数解析失败: " + err.Error(), true
 		}
-		in.Section = strings.TrimSpace(in.Section)
+		in.Section = normalizeSection(in.Section)
 		in.Key = strings.TrimSpace(in.Key)
 		if in.Section == "" || in.Key == "" {
 			return "section 与 key 均必填（分区名或 ID、该分区密钥）", true
@@ -766,9 +776,12 @@ func callTool(name string, raw json.RawMessage) (string, bool) {
 		if key == "" {
 			return "缺少分区密钥：请先 start_monitor 提供 key，或在参数里传 key。", true
 		}
-		section := strings.TrimSpace(in.Section)
+		section := normalizeSection(in.Section)
 		if section == "" {
-			section = st.section
+			section = strconv.FormatInt(st.sectionID, 10)
+			if st.sectionID == 0 {
+				section = st.section
+			}
 		}
 		list, _, err := boardTasks(section, key, in.Status)
 		if err != nil {
