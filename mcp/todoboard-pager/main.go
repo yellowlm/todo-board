@@ -68,6 +68,7 @@ type monitorState struct {
 	target    string
 	hash      string
 	prev      []task
+	pending   string // 待重发的通知（鉴权/网络失败时不丢，按间隔重试）
 }
 
 type task struct {
@@ -188,12 +189,6 @@ func loadEnvValues() {
 	}
 }
 
-func aionHeaders(req *http.Request) {
-	req.Header.Set("x-aionui-runtime-token", envToken)
-	req.Header.Set("x-aionui-user-id", envUserID)
-	req.Header.Set("x-aionui-conversation-id", envConvID)
-}
-
 // precheckTarget 读会话 extra：teamId 非空 → 团队端点；否则单聊端点。
 // slot_id 只从会话读取，不做额外配置项。
 func precheckTarget() error {
@@ -202,7 +197,7 @@ func precheckTarget() error {
 	if err != nil {
 		return fmt.Errorf("构造预检请求失败: %w", err)
 	}
-	aionHeaders(req)
+	applyAionAuth(req)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("连接 AionUI 失败（%s）：%v；请检查 AIONUI_BASE_URL 是否可达", envBaseURL, err)
@@ -276,7 +271,7 @@ func sendMessage(content string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	aionHeaders(req)
+	applyAionAuth(req)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("发送消息失败: %w", err)
@@ -309,7 +304,7 @@ func leaseLoop() {
 			if err != nil {
 				return
 			}
-			aionHeaders(req)
+			applyAionAuth(req)
 			resp, err := httpClient.Do(req)
 			if err != nil {
 				dbg("续租失败: %v", err)
@@ -523,6 +518,21 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 		// 一律用启动时解析出的分区 ID 轮询：分区改名后依然能盯
 		pollSection := strconv.FormatInt(sectionID, 10)
 		poll := func() {
+			// 先补发上一条没发出去的通知（读 key 失败 / 401 / 网络问题都不丢，按间隔无上限重试）
+			stateMu.Lock()
+			pend, iv := state.pending, state.interval
+			stateMu.Unlock()
+			if pend != "" {
+				if err := sendMessage(pend); err != nil {
+					dbg("补发通知失败（%v），将按 %d 秒继续重试", err, iv)
+				} else {
+					stateMu.Lock()
+					state.pending = ""
+					stateMu.Unlock()
+					dbg("补发通知成功")
+				}
+			}
+
 			list, raw, err := boardTasks(pollSection, key, "")
 			if err != nil {
 				dbg("轮询失败: %v", err)
@@ -550,9 +560,16 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 				return
 			}
 			msg := buildNotice(list, added, changed, deleted)
+			// 先落 pending 再发：失败（读 key 失败 / 401 / 403 / 网络）时由下一轮 tick 补发，不丢消息
+			stateMu.Lock()
+			state.pending = msg
+			stateMu.Unlock()
 			if err := sendMessage(msg); err != nil {
-				dbg("发通知失败: %v", err)
+				dbg("发通知失败（读取 key 失败 / 鉴权失败），将按 %d 秒重试：%v", interval, err)
 			} else {
+				stateMu.Lock()
+				state.pending = ""
+				stateMu.Unlock()
 				dbg("已发通知（新增 %d / 变更 %d / 删除 %d）", len(added), len(changed), len(deleted))
 			}
 		}
