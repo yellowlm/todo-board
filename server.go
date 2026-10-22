@@ -428,6 +428,8 @@ func (s *Server) routes(mux *http.ServeMux, static fs.FS) {
 	mux.HandleFunc("GET /api/settings", s.handleSettings)
 	mux.HandleFunc("POST /api/settings/autostart", s.handleAutostart)
 	mux.HandleFunc("PUT /api/settings/bind", s.handleBindPut)
+	mux.HandleFunc("GET /api/settings/poll", s.handlePollGet)
+	mux.HandleFunc("PUT /api/settings/poll", s.handlePollPut)
 	mux.HandleFunc("POST /api/window/close", s.handleWindowClose)
 	mux.HandleFunc("POST /api/window/hide", s.handleWindowHide)
 	mux.HandleFunc("POST /api/window/drag", s.handleWindowDrag)
@@ -980,15 +982,16 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		autostart = s.AutostartStatus()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":      Version,
-		"api_base":     s.BaseURL(),
-		"db_path":      s.dbPath,
-		"autostart":    autostart,
-		"port":         s.Port(),
-		"bind":         s.BindConfig(),
-		"listening":    s.Listening(),
-		"lan_open":     HasNonLoopback(s.Listening()),
-		"default_bind": defaultBind,
+		"version":           Version,
+		"api_base":          s.BaseURL(),
+		"db_path":           s.dbPath,
+		"autostart":         autostart,
+		"port":              s.Port(),
+		"bind":              s.BindConfig(),
+		"listening":         s.Listening(),
+		"lan_open":          HasNonLoopback(s.Listening()),
+		"default_bind":      defaultBind,
+		"poll_interval_sec": loadPollInterval(),
 	})
 }
 

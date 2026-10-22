@@ -31,7 +31,7 @@
 - 多列瀑布流：`<768` 1 列 / `768–999` 2 列 / `1000–1199` 3 列 / `1200–1499` 4 列 / `≥1500` 5 列
 - 任务可展开为卡片（Markdown 正文、截止、状态、操作按钮）
 - 分区与任务都分页加载（默认 20 条/页），滚到底自动加载更多分区，栏内可「加载更多」任务
-- 通过 SSE 实时刷新，任何来源的增删改 1 秒内可见
+- 按设置的刷新间隔定时拉取（默认 5 秒，可在设置里改），任何来源的增删改在一个周期内可见
 
 ### 外部 API（给 AI 代理）
 
@@ -50,7 +50,7 @@
 ### 分区排序
 
 - `PUT /api/sections/order` 保存顺序，桌面与浏览器版都支持拖动排序
-- 排序写入 `sections.sort_order` 并在增删分区后保持连续，变更通过 SSE 广播
+- 排序写入 `sections.sort_order` 并在增删分区后保持连续，变更通过 `/api/events` 广播（前端已改用定时轮询，该端点保留）
 
 ## 给 AI Agent 用的部分
 
@@ -62,7 +62,7 @@
   启动时绑定「分区 + 该分区 KEY + 刷新间隔」，之后看板一有变化就在会话里发通知（新增任务逐条列标题，删除带
   `[删除]` 前缀）。共 4 个工具：`start_monitor` / `stop_monitor` / `list_tasks` / `set_status`；不写任何本地文件。
 - **内置 HTTP API** —— `X-Auth-Key` 按分区隔离，Agent 可增删改查任务、改三态；还可以订阅 `/api/events`
-  的 SSE 事件流做实时联动。分区之间的数据互不可见。
+  的 SSE 事件流做实时联动（前端默认已改用定时轮询，此端点供外部订阅）。分区之间的数据互不可见。
 
 三者都不需要额外的服务端：桌面程序自己就是那个服务，Agent 连本机 `127.0.0.1:17321` 即可。
 ## 操作细节
@@ -109,6 +109,12 @@
 - 全部地址都失败时会自动回滚到上一次能用的监听，界面不会失联。
 - 出现黄色警示「已对局域网开放」表示当前有一条非环回地址——网页端没有鉴权，同网段的人都能读写，不用时把那条删掉。
 
+**自动刷新间隔**
+
+- 桌面「设置」或浏览器「设置」里都有「🔄 自动刷新间隔」，填 1–300 秒（默认 5），点保存即时生效，不用重启；两端读的是同一个服务端设置，改一处两边都变。
+- **用户操作（新建 / 编辑 / 完成 / 删除等）完成后立即刷新**，轮询只用于接收其它来源（别的设备、Agent）的变化。
+- **首次打开会立即加载一次**（不等第一个轮询周期）。
+
 **完成推送（Bark）**
 
 - 设置页填三项：服务器地址、设备 Key、图标 URL（可留空），填完可以先「发送测试推送」验证。
@@ -151,6 +157,7 @@ build.bat
   - `window.json` 窗口位置尺寸
   - `bark.json` 推送配置（服务器地址 / 设备 Key / 图标 URL / 总开关）
   - `listen.json` 监听地址列表（`{"binds":["127.0.0.1"]}`）
+  - `settings.json` 应用设置：`poll_interval_sec` 自动刷新间隔（默认 5，范围 1–300）
   - `logs\app.log` 运行日志
   - `WebView2`、`WebView2Editor` 浏览器内核数据
 - **Bark**：需自行填写服务器地址（如 `https://bark.example.com`）与设备 Key；图标 URL 可留空
@@ -263,8 +270,9 @@ build.bat
 
 | 路径 | 说明 |
 | --- | --- |
-| `GET /api/settings` | 版本 / 接口地址 / 数据文件 / 自启状态 / `bind` / `listening` / `port` / `lan_open` / `default_bind` |
+| `GET /api/settings` | 版本 / 接口地址 / 数据文件 / 自启状态 / `bind` / `listening` / `port` / `lan_open` / `default_bind` / `poll_interval_sec` |
 | `PUT /api/settings/bind` | 保存监听地址：body `{"binds":[…]}`，返回 `ok` / `bind` / `listening` / `failures` / `error` |
+| `PUT /api/settings/poll` | 保存自动刷新间隔：body `{"interval_sec":N}`（1–300），返回 `ok` / `interval_sec` |
 | `POST /api/settings/autostart` | 开关开机自启动 |
 | `GET /api/bark` | 推送配置（key 只返回掩码） |
 | `PUT /api/bark` | 保存推送配置 |
@@ -274,7 +282,7 @@ build.bat
 
 | 路径 | 说明 |
 | --- | --- |
-| `GET /api/events` | SSE 事件流，任何来源的增删改都会推送 |
+| `GET /api/events` | SSE 事件流（前端已不订阅，保留供外部用） |
 
 详细字段、状态取值与错误码见 `skills/todo-board/SKILL.md`。
 

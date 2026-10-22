@@ -39,6 +39,7 @@ const state = {
   revealed: {},
   editing: null,
   bindDraft: null,
+  boardSig: '',
   modal: null,
   lastTaskId: null,
 };
@@ -182,7 +183,14 @@ async function openSettings() {
 async function refresh() {
   if (state.editing) return;
   try {
-    state.board = await api('GET', '/api/board');
+    const board = await api('GET', '/api/board');
+    const sig = JSON.stringify(board);
+    if (state.view === 'board' && sig === state.boardSig) {
+      // 数据没变：不重绘，避免闪动与滚动位置丢失
+      return;
+    }
+    state.boardSig = sig;
+    state.board = board;
     if (state.view === 'sections') {
       const res = await api('GET', '/api/sections');
       state.sections = res.sections || [];
@@ -564,6 +572,16 @@ function renderSettings() {
         <div class="secrow-key">当前生效：${esc(listening.join('、') || '（无）')} · 端口 ${port}</div>
       </div>
       <div class="bark-actions"><button class="rowbtn" data-act="bind-save">💾 保存并生效</button></div>
+    </div>
+    <div class="secrow">
+      <div>
+        <div class="secrow-name">🔄 自动刷新间隔</div>
+        <div class="secrow-key">前端每隔多少秒拉一次数据（1–300 秒，默认 5）</div>
+      </div>
+      <div class="actions">
+        <input class="input" id="pollInput" type="number" min="1" max="300" style="width:96px" value="${(state.settings && state.settings.poll_interval_sec) || 5}">
+        <button class="rowbtn" data-act="poll-save">💾 保存</button>
+      </div>
     </div>
     <div class="secrow">
       <div>
@@ -1089,6 +1107,17 @@ function bindEvents() {
       } catch (err) {
         toast(err.message, true);
       }
+    } else if (btn.dataset.act === 'poll-save') {
+      const v = Number((($('#pollInput') || {}).value) || 0);
+      try {
+        const res = await api('PUT', '/api/settings/poll', { interval_sec: v });
+        state.settings = await api('GET', '/api/settings');
+        startPolling(true);
+        render();
+        toast('自动刷新间隔已改为 ' + res.interval_sec + ' 秒');
+      } catch (err) {
+        toast(err.message, true);
+      }
     } else if (btn.dataset.act === 'bind-add') {
       const input = $('#bindInput');
       const v = input ? input.value.trim().replace(/^\[(.*)\]$/, '$1') : '';
@@ -1167,31 +1196,60 @@ function bindEvents() {
 
 /* ---------------- 启动 ---------------- */
 
-function connectSSE() {
-  const source = new EventSource('/api/events');
-  let timer = null;
-  source.onmessage = () => {
+// 用户操作后立即刷新（100ms 防抖，避免连续操作打请求风暴）
+let refreshSoonTimer = null;
+function refreshSoon() {
+  clearTimeout(refreshSoonTimer);
+  refreshSoonTimer = setTimeout(() => {
     if (state.editing) return;
-    clearTimeout(timer);
-    timer = setTimeout(refresh, 120);
-  };
+    refresh();
+  }, 100);
+}
+// 供主进程（编辑窗口关闭时）通过 Eval 调用
+window.__todoRefreshNow = refreshSoon;
+
+// 定时轮询（原 SSE 已停用；服务端 /api/events 仍保留给其他调用方）
+let pollTimer = null;
+
+function pollIntervalMs() {
+  const n = Number((state.settings && state.settings.poll_interval_sec) || 5);
+  return Math.max(1, Math.min(300, n)) * 1000;
+}
+
+// immediate=true 时先立即刷一次再起定时器（改间隔保存后用）；
+// 首次启动若已有数据则不重复请求，只起定时器。
+function startPolling(immediate) {
+  if (pollTimer) clearInterval(pollTimer);
+  if (immediate || !state.board) {
+    refresh();
+  }
+  pollTimer = setInterval(() => {
+    if (state.editing || state.modal) return;
+    refresh();
+  }, pollIntervalMs());
 }
 
 async function init() {
   bindEvents();
   window.addEventListener('focus', () => {
-    if (!state.modal && !state.editing) refresh();
+    if (!state.modal && !state.editing) refreshSoon();
   });
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && !state.modal && !state.editing) refresh();
+    if (!document.hidden && !state.modal && !state.editing) refreshSoon();
   });
   try {
     state.board = await api('GET', '/api/board');
+    state.boardSig = JSON.stringify(state.board);
   } catch (e) {
     /* 首次加载失败时留空页 */
   }
+  try {
+    state.settings = await api('GET', '/api/settings');
+  } catch (e) {
+    /* 拿不到设置就用默认 5 秒 */
+  }
   render();
-  connectSSE();
+  startPolling(false);
   if (location.hash === '#settings') openSettings();
 }
 

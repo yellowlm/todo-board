@@ -957,6 +957,7 @@ func editorProc(hwnd, msg, wp, lp uintptr) uintptr {
 	}
 	if msg == wmClose {
 		procShowWindow.Call(hwnd, swHide)
+		notifyMainRefresh()
 		return 0
 	}
 	if editorProcPrev != 0 {
@@ -991,6 +992,18 @@ func hideEditorWindow() {
 		return
 	}
 	w.Dispatch(func() { procShowWindow.Call(hwnd, swHide) })
+	// 编辑窗口关闭后立刻通知主窗口刷新（不等轮询）
+	notifyMainRefresh()
+}
+
+// notifyMainRefresh 让主窗口立即刷新（JS 侧 100ms 防抖）。
+func notifyMainRefresh() {
+	if wv == nil {
+		return
+	}
+	wv.Dispatch(func() {
+		wv.Eval("window.__todoRefreshNow && window.__todoRefreshNow()")
+	})
 }
 
 func dragEditorWindow() {

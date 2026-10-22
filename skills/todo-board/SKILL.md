@@ -152,7 +152,7 @@ Errors are `{"error": "<message>"}` with a Chinese message:
   and returns how many were removed; deleting the same id twice returns `404`.
 - There is still no server-side search: fetch `/api/tasks` and filter locally.
 - New tasks are always `open`; `status` / `done` are ignored on create.
-- Changes made here are pushed to the open app window immediately (SSE).
+- Changes are picked up by the open app window within the poll interval (default 5 s, configurable in settings). The `/api/events` SSE endpoint still exists but the bundled UI no longer subscribes to it.
 
 ## MCP: todoboard-pager
 

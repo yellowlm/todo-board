@@ -151,7 +151,8 @@ svg.i.sm { width: 14px; height: 14px; }
 .stat.doing .n { color: var(--info); }
 .stat.late .n { color: var(--danger); }
 .ov-progress { flex: none; display: flex; align-items: center; }
-.ring { position: relative; width: 46px; height: 46px; flex: none; }
+/* 暂时隐藏 3/4 圆环（手机端溢出），勿删：DOM 与 .ring-svg/.ring-track/.ring-fill/.ring-num 样式保留 */
+.ring { display: none; position: relative; width: 46px; height: 46px; flex: none; }
 .ring-svg { width: 46px; height: 46px; display: block; }
 .ring-track { fill: none; stroke: var(--border-strong); stroke-width: 5; stroke-linecap: round; }
 .ring-fill { fill: none; stroke: var(--primary); stroke-width: 5; stroke-linecap: round; }

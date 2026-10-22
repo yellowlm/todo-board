@@ -73,6 +73,16 @@
         <div class="field"><label>分区管理（删除会连同该分区任务一起删除）</label>
           <div id="sectionAdmin" class="section-admin"></div>
         </div>
+        <div class="formrow">
+          <div>
+            <div class="secrow-name">🔄 自动刷新间隔</div>
+            <div class="secrow-key">前端每隔多少秒拉一次数据（1–300 秒，默认 5）</div>
+          </div>
+          <div class="actions">
+            <input class="input" id="pollSec" type="number" min="1" max="300" style="width:96px">
+            <button class="btn" id="pollSave">保存</button>
+          </div>
+        </div>
         <div class="bark-actions">
           <button class="btn" id="barkTest">📨 发送测试推送</button>
           <button class="btn btn-primary" id="barkSave">保存</button>

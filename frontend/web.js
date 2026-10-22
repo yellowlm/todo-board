@@ -20,6 +20,7 @@ const state = {
   settings: null,
   loadingMore: false,
   dragId: null,
+  dataSig: '',
 };
 
 /* ---------------- 基础 ---------------- */
@@ -455,6 +456,12 @@ async function refreshAll() {
   } catch (e) {
     toast(e.message, true);
   }
+  const sig = JSON.stringify({ sections: state.sections, tasks: state.tasks });
+  if (sig === state.dataSig) {
+    loadStats();
+    return; // 数据没变：不重绘，避免闪动/滚动丢失
+  }
+  state.dataSig = sig;
   render();
   loadStats();
 }
@@ -595,13 +602,30 @@ function bind() {
     deleteSection(sid, name, count);
   });
 
-  // SSE
-  let timer = null;
-  const es = new EventSource('/api/events');
-  es.onmessage = () => {
-    clearTimeout(timer);
-    timer = setTimeout(refreshAll, 300);
-  };
+  // 自动刷新间隔保存
+  $('#pollSave').addEventListener('click', async () => {
+    const v = Number($('#pollSec').value || 0);
+    try {
+      const res = await api('PUT', '/api/settings/poll', { interval_sec: v });
+      state.settings = await api('GET', '/api/settings');
+      startPolling(true);
+      toast('自动刷新间隔已改为 ' + res.interval_sec + ' 秒');
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
+}
+
+// 定时轮询（原 SSE 已停用；服务端 /api/events 仍保留）
+let pollTimer = null;
+function pollIntervalMs() {
+  const n = Number((state.settings && state.settings.poll_interval_sec) || 5);
+  return Math.max(1, Math.min(300, n)) * 1000;
+}
+function startPolling(immediate) {
+  if (pollTimer) clearInterval(pollTimer);
+  if (immediate) refreshAll();
+  pollTimer = setInterval(refreshAll, pollIntervalMs());
 }
 
 function fillBark() {
@@ -651,6 +675,7 @@ async function openSettings() {
     state.bark = bark;
     state.settings = settings;
     fillBark();
+    $('#pollSec').value = settings.poll_interval_sec || 5;
     $('#versionInfo').textContent = `版本 ${settings.version} · 数据文件 ${settings.db_path}`;
   } catch (e) {
     toast(e.message, true);
@@ -660,7 +685,13 @@ async function openSettings() {
 
 (async function init() {
   bind();
+  try {
+    state.settings = await api('GET', '/api/settings');
+  } catch (e) {
+    /* 默认 5 秒 */
+  }
   loadStats();
   await loadSections(false);
+  startPolling(false);
   if (location.hash === '#settings') openSettings();
 })();
