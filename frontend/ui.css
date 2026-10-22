@@ -36,8 +36,8 @@ html, body { height: 100%; }
 
 body {
   margin: 0;
-  /* 防手机端下拉时整页回弹 / 滚动穿透 */
-  overscroll-behavior-y: contain;
+  /* 手机端不回弹 */
+  overscroll-behavior-y: none;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
