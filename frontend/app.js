@@ -1112,7 +1112,11 @@ function bindEvents() {
       try {
         const res = await api('PUT', '/api/settings/poll', { interval_sec: v });
         state.settings = await api('GET', '/api/settings');
-        startPolling(true);
+        if (sseAlive) {
+          refresh();
+        } else {
+          startPolling(true);
+        }
         render();
         toast('自动刷新间隔已改为 ' + res.interval_sec + ' 秒');
       } catch (err) {
@@ -1208,25 +1212,92 @@ function refreshSoon() {
 // 供主进程（编辑窗口关闭时）通过 Eval 调用
 window.__todoRefreshNow = refreshSoon;
 
-// 定时轮询（原 SSE 已停用；服务端 /api/events 仍保留给其他调用方）
+/* ---- 实时刷新：SSE 为主，断开回退定时轮询 ----
+   有 SSE 就不轮询；SSE 连上后立刻停掉轮询，断开期间轮询兜底。
+   诊断：window.__todoDiag（sse 状态 / sseOpens / pollTicks）。 */
 let pollTimer = null;
+let sse = null;
+let sseAlive = false;
+let sseFallbackTimer = null;
+let sseRebuildTimer = null;
+
+const diag = (window.__todoDiag = { sse: 'idle', sseOpens: 0, pollTicks: 0 });
 
 function pollIntervalMs() {
   const n = Number((state.settings && state.settings.poll_interval_sec) || 5);
   return Math.max(1, Math.min(300, n)) * 1000;
 }
 
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
 // immediate=true 时先立即刷一次再起定时器（改间隔保存后用）；
 // 首次启动若已有数据则不重复请求，只起定时器。
 function startPolling(immediate) {
-  if (pollTimer) clearInterval(pollTimer);
+  stopPolling();
   if (immediate || !state.board) {
     refresh();
   }
   pollTimer = setInterval(() => {
+    diag.pollTicks++;
     if (state.editing || state.modal) return;
     refresh();
   }, pollIntervalMs());
+}
+
+// 已在轮询时不要重建定时器：SSE 每次重试失败都会触发 onerror，
+// 若每次都重建，间隔永远走不满，回退轮询就等于停了。
+function ensurePolling() {
+  if (pollTimer) return;
+  startPolling(false);
+}
+
+function connectSSE() {
+  if (!window.EventSource) {
+    diag.sse = 'unavailable';
+    startPolling(false);
+    return;
+  }
+  clearTimeout(sseRebuildTimer);
+  if (sse) {
+    try { sse.close(); } catch (e) { /* ignore */ }
+    sse = null;
+  }
+  try {
+    sse = new EventSource('/api/events');
+  } catch (e) {
+    diag.sse = 'unavailable';
+    startPolling(false);
+    return;
+  }
+  sse.onopen = () => {
+    sseAlive = true;
+    diag.sse = 'open';
+    diag.sseOpens++;
+    clearTimeout(sseFallbackTimer);
+    clearTimeout(sseRebuildTimer);
+    stopPolling(); // 有 SSE 就不轮询
+  };
+  sse.onmessage = () => refreshSoon();
+  sse.onerror = () => {
+    sseAlive = false;
+    diag.sse = 'closed';
+    ensurePolling(); // 断开期间轮询保持开着（已在跑就不重建）
+    // 兜底自建重连：WebView2 里 EventSource 有时断几次就不再自己重试，久等不回来。
+    clearTimeout(sseRebuildTimer);
+    sseRebuildTimer = setTimeout(() => {
+      if (!sseAlive) connectSSE();
+    }, 5000);
+  };
+  // 3 秒内未 onopen 就先开轮询兜底
+  clearTimeout(sseFallbackTimer);
+  sseFallbackTimer = setTimeout(() => {
+    if (!sseAlive) ensurePolling();
+  }, 3000);
 }
 
 async function init() {
@@ -1249,7 +1320,7 @@ async function init() {
     /* 拿不到设置就用默认 5 秒 */
   }
   render();
-  startPolling(false);
+  connectSSE();
   if (location.hash === '#settings') openSettings();
 }
 
