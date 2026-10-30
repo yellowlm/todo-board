@@ -764,6 +764,21 @@ async function openSettings() {
   renderSectionAdmin();
 }
 
+/* ---- 老版 iOS WebKit 兜底：根滚动到顶时禁止继续下拉 ----
+   overscroll-behavior-y 在旧 iOS 上不生效，补最小手势守卫：只在
+   「根滚动已到顶」且「单指往下拉」时 preventDefault，其余一律放行。 */
+let touchStartY = null;
+document.addEventListener('touchstart', (e) => {
+  touchStartY = e.touches.length === 1 ? e.touches[0].clientY : null;
+}, { passive: true });
+
+document.addEventListener('touchmove', (e) => {
+  if (touchStartY === null || e.touches.length !== 1) return;
+  const root = document.scrollingElement || document.documentElement;
+  if (root.scrollTop > 0) return;
+  if (e.touches[0].clientY - touchStartY > 0) e.preventDefault();
+}, { passive: false });
+
 (async function init() {
   bind();
   try {

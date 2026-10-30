@@ -28,6 +28,11 @@
 
 * { box-sizing: border-box; }
 
+/* 防手机端整页下拉回弹 / 触发浏览器下拉刷新：
+   移动端根滚动容器是 html（documentElement），body 不是滚动容器，
+   所以这条必须落在 html 上；body 那条保留作为补充。 */
+html { overscroll-behavior-y: none; }
+
 body {
   margin: 0;
   /* 手机端不回弹 */
