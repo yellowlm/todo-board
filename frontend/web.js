@@ -764,61 +764,6 @@ async function openSettings() {
   renderSectionAdmin();
 }
 
-/* ---- 老版 iOS WebKit 兜底：只在「手势开始时已在顶部」且「单指往下拉」时拦截 ----
-   overscroll-behavior-y 在旧 iOS 上不生效，这里补最小手势守卫。
-   注意：iOS 上 document.scrollingElement.scrollTop 可能长期为 0，
-   真实位置得用 window.pageYOffset / body.scrollTop 兜底，
-   否则「滚下去之后」也会被当成在顶部，把正常的向上滚一起拦死。 */
-function rootScrollTop() {
-  return Math.max(
-    window.pageYOffset || 0,
-    document.documentElement ? document.documentElement.scrollTop || 0 : 0,
-    document.body ? document.body.scrollTop || 0 : 0
-  );
-}
-
-// 手指落点是否在可纵向滚动的子元素内（展开的任务描述、代码块、弹层内部滚动）
-function inScrollableChild(target) {
-  let el = target;
-  while (el && el !== document.body) {
-    if (el.nodeType === 1 && el.scrollHeight > el.clientHeight + 1) {
-      const oy = getComputedStyle(el).overflowY;
-      if (oy === 'auto' || oy === 'scroll') return true;
-    }
-    el = el.parentElement;
-  }
-  return false;
-}
-
-let touchStartY = null;
-let touchStartAtTop = false;
-
-function resetTouchGuard() {
-  touchStartY = null;
-  touchStartAtTop = false;
-}
-
-document.addEventListener('touchstart', (e) => {
-  if (e.touches.length !== 1) {
-    resetTouchGuard();
-    return;
-  }
-  touchStartY = e.touches[0].clientY;
-  touchStartAtTop = rootScrollTop() <= 0;
-}, { passive: true });
-
-document.addEventListener('touchmove', (e) => {
-  if (touchStartY === null) return;
-  if (e.touches.length !== 1) return;                   // 双指缩放等，放行
-  if (!touchStartAtTop) return;                          // 手势开始时不在顶部：正常向上滚
-  if (e.touches[0].clientY - touchStartY <= 0) return;   // 往上滑，放行
-  if (inScrollableChild(e.target)) return;               // 内部滚动元素自己处理
-  e.preventDefault();
-}, { passive: false });
-
-document.addEventListener('touchend', resetTouchGuard);
-document.addEventListener('touchcancel', resetTouchGuard);
-
 (async function init() {
   bind();
   try {

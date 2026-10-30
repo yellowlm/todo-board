@@ -28,10 +28,17 @@
 
 * { box-sizing: border-box; }
 
-/* 防手机端整页下拉回弹 / 触发浏览器下拉刷新：
-   移动端根滚动容器是 html（documentElement），body 不是滚动容器，
-   所以这条必须落在 html 上；body 那条保留作为补充。 */
-html { overscroll-behavior-y: none; }
+/* 根不滚、内层滚：iOS 上 overscroll-behavior 在 html/body 这种根滚动器上不可靠，
+   所以把滚动交给 .scroll-root（普通滚动容器），html/body 固定高度、不滚。 */
+html, body { height: 100%; overflow: hidden; }
+
+.scroll-root {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
 
 body {
   margin: 0;
@@ -72,9 +79,9 @@ svg.i.sm { width: 14px; height: 14px; }
   border-radius: var(--radius-card);
   box-shadow: 0 3px 12px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.03);
 }
-body > .overview { margin-left: 20px; margin-right: 20px; }
+.scroll-root > .overview { margin-left: 20px; margin-right: 20px; }
 @media (min-width: 1960px) {
-  body > .overview { max-width: 1920px; margin-left: auto; margin-right: auto; }
+  .scroll-root > .overview { max-width: 1920px; margin-left: auto; margin-right: auto; }
 }
 .ov-head { flex: none; }
 .ov-title { font-size: 14px; font-weight: 700; white-space: nowrap; }
@@ -280,7 +287,7 @@ body > .overview { margin-left: 20px; margin-right: 20px; }
   .ov-group { justify-content: flex-start; }
   .topbar { padding: 12px 14px 6px; }
   .board { padding: 0 14px 20px; }
-  body > .overview { margin-left: 14px; margin-right: 14px; }
+  .scroll-root > .overview { margin-left: 14px; margin-right: 14px; }
 }
 
 /* Bark 卡片：按钮行贴底部、与输入项同宽右对齐 */
