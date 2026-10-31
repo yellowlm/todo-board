@@ -353,6 +353,7 @@ function sectionHtml(section, index, now) {
       <svg class="i sm chev"><use href="#i-chev"/></svg>
       <span class="section-name">${esc(section.name)}</span><span class="section-id">#${section.id}</span>
       <span class="section-count">${shown.length}</span>
+      <span class="mon-badge" title="盯盘目标数">👁 ${Number(section.monitor_count || 0)}</span>
       <div class="secprog"><div class="sp-bar"><div class="sp-fill" style="width:${pct}%"></div></div></div>
       <div class="grow"></div>
       <button class="newbtn" data-act="tail" title="置于队尾" aria-label="置于队尾">⤓</button>
@@ -496,6 +497,7 @@ function secRow(section) {
       <button class="rowbtn" data-act="rekey">🔑 修改密钥</button>
       <button class="rowbtn danger" data-act="del-sec">🗑️ 删除分区</button>
     </div>
+    <div class="mon-admin" data-mon="${section.id}"><div class="mon-meta">盯盘：读取中…</div></div>
   </div>`;
 }
 
@@ -540,10 +542,84 @@ function renderSections() {
   }
 
   list.scrollTop = scroll;
+  loadMonitorPanels();
+}
+
+/* ---------------- 盯盘（分区管理） ---------------- */
+
+
+function relTime(iso) {
+  if (!iso) return '从未心跳';
+  const t = Date.parse(iso);
+  if (!t) return iso;
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return s + ' 秒前';
+  if (s < 3600) return Math.round(s / 60) + ' 分钟前';
+  if (s < 86400) return Math.round(s / 3600) + ' 小时前';
+  return Math.round(s / 86400) + ' 天前';
+}
+
+function monStatusClass(code) {
+  if (code >= 200 && code < 300) return 'ok';
+  if (code >= 400 && code < 500) return 'err';
+  return 'muted';
+}
+
+function monStatusText(code) {
+  if (!code) return '未推送';
+  if (code === -1) return '-1 未配置';
+  return String(code);
+}
+
+function monName(m) {
+  if (m.team_name || m.slot_name) return [m.team_name, m.slot_name].filter(Boolean).join(' / ');
+  const tail = String(m.slot_id || m.conversation_id || '').slice(-6);
+  return `${m.target_type}…${tail || '?'}`;
+}
+
+function monitorRowHtml(sid, m) {
+  const name = monName(m);
+  return `<div class="mon-row">
+    <span class="mon-name" title="${esc(name)}">${esc(name)}</span>
+    <span class="mon-meta">#${sid}</span>
+    <span class="mon-meta" title="${esc(m.last_seen || '')}">${esc(relTime(m.last_seen))}</span>
+    <span class="mon-status ${monStatusClass(m.last_status)}">${esc(monStatusText(m.last_status))}</span>
+    <button class="rowbtn danger" data-act="mon-del" data-mid="${m.id}" data-sid="${sid}" title="删除该盯盘">🗑</button>
+  </div>`;
+}
+
+// loadMonitorPanels 给每个分区行补上盯盘列表（管理面，不需要分区 key）
+async function loadMonitorPanels() {
+  const nodes = Array.from(document.querySelectorAll('.mon-admin[data-mon]'));
+  if (!nodes.length) return;
+  await Promise.all(nodes.map(async (el) => {
+    const sid = Number(el.dataset.mon);
+    try {
+      const res = await api('GET', `/api/monitors?section=${sid}`);
+      const list = res.monitors || [];
+      el.innerHTML = `<div class="mon-head">👁 盯盘 ${list.length} 个目标</div>` +
+        (list.length ? list.map((m) => monitorRowHtml(sid, m)).join('') : '<div class="mon-meta">该分区暂无盯盘</div>') +
+        `<div class="mon-actions"><button class="rowbtn danger" data-act="mon-clear" data-sid="${sid}"${list.length ? '' : ' disabled'}>清除本分区盯盘</button></div>`;
+    } catch (e) {
+      el.innerHTML = `<div class="mon-meta">盯盘读取失败：${esc(e.message)}</div>`;
+    }
+  }));
+  const first = nodes[0];
+  if (first && !first.querySelector('[data-act="mon-clear-all"]')) {
+    const wrap = document.createElement('div');
+    wrap.className = 'mon-actions';
+    wrap.innerHTML = '<button class="rowbtn danger" data-act="mon-clear-all">清除全部盯盘</button>';
+    first.appendChild(wrap);
+  }
+}
+
+async function afterMonitorChange() {
+  await refresh();
+  if (state.view === 'sections') renderSections();
+  loadMonitorPanels();
 }
 
 /* ---------------- 设置 ---------------- */
-
 function renderSettings() {
   const s = state.settings;
   if (!s) {
@@ -581,6 +657,25 @@ function renderSettings() {
       <div class="actions">
         <input class="input" id="pollInput" type="number" min="1" max="300" style="width:96px" value="${(state.settings && state.settings.poll_interval_sec) || 5}">
         <button class="rowbtn" data-act="poll-save">💾 保存</button>
+      </div>
+    </div>
+    <div class="secrow">
+      <div>
+        <div class="secrow-name">👁 盯盘推送（AIONUI HELPER）</div>
+        <div class="secrow-key">${s.aionui_helper_path ? esc(s.aionui_helper_path) : '<b>未配置：盯盘推送会被跳过</b>'}</div>
+      </div>
+      <div class="actions">
+        <input class="input" id="aionHelperPath" placeholder="helper 可执行文件完整路径" value="${esc(s.aionui_helper_path || '')}" style="width:280px">
+      </div>
+    </div>
+    <div class="secrow">
+      <div>
+        <div class="secrow-name">⏱ 跳过重试间隔</div>
+        <div class="secrow-key">推送失败后按此间隔静默重试（5–3600 秒，默认 60），不设最大次数</div>
+      </div>
+      <div class="actions">
+        <input class="input" id="aionSkipInput" type="number" min="5" max="3600" style="width:96px" value="${(s && s.skip_interval_sec) || 60}">
+        <button class="rowbtn" data-act="aion-save">💾 保存</button>
       </div>
     </div>
     <div class="secrow">
@@ -994,6 +1089,44 @@ function bindEvents() {
 
   $('#sectionsList').addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-act]');
+    if (btn && btn.dataset.act === 'mon-del') {
+      const sid = Number(btn.dataset.sid);
+      const mid = Number(btn.dataset.mid);
+      if (!confirm(`确定删除这一条盯盘（#${sid}）？会话将不再收到该分区的通知。`)) return;
+      try {
+        await api('DELETE', `/api/monitors/${mid}`);
+        toast('已删除该盯盘');
+        await afterMonitorChange();
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (btn && btn.dataset.act === 'mon-clear') {
+      const sid = Number(btn.dataset.sid);
+      const n = btn.closest('.mon-admin').querySelectorAll('.mon-row').length;
+      if (!confirm(`确定清除分区 #${sid} 的全部 ${n} 条盯盘？清除后相关会话不再收到通知。`)) return;
+      try {
+        await api('DELETE', `/api/monitors?section=${sid}`);
+        toast(`已清除分区 #${sid} 的 ${n} 条盯盘`);
+        await afterMonitorChange();
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
+    if (btn && btn.dataset.act === 'mon-clear-all') {
+      const n = document.querySelectorAll('.mon-row').length;
+      if (!confirm(`确定清除全部盯盘共 ${n} 条？所有会话都不再收到盯盘通知。`)) return;
+      try {
+        await api('DELETE', '/api/monitors?all=1');
+        toast(`已清除全部 ${n} 条盯盘`);
+        await afterMonitorChange();
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
     if (!btn) return;
     const act = btn.dataset.act;
     const row = e.target.closest('.secrow');
@@ -1089,6 +1222,22 @@ function bindEvents() {
   $('#settingsList').addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-act]');
     if (!btn || !state.settings) return;
+    if (btn.dataset.act === 'aion-save') {
+      const helper = (($('#aionHelperPath') || {}).value || '').trim();
+      const skip = Number((($('#aionSkipInput') || {}).value) || 0);
+      try {
+        const res = await api('PUT', '/api/settings/aion', {
+          aionui_helper_path: helper,
+          skip_interval_sec: skip,
+        });
+        state.settings = await api('GET', '/api/settings');
+        render();
+        toast(`已保存：${res.aionui_helper_path ? 'helper 已配置' : '未配置 helper（推送会跳过）'}，重试间隔 ${res.skip_interval_sec} 秒`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+      return;
+    }
     if (btn.dataset.act === 'autostart') {
       const next = !state.settings.autostart;
       try {

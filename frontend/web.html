@@ -87,6 +87,19 @@
             <button class="btn" id="pollSave">保存</button>
           </div>
         </div>
+        <div class="field"><label>👁 盯盘推送 · AIONUI HELPER 路径（空＝不推送）</label>
+          <input class="input" id="aionHelperPath" placeholder="helper 可执行文件完整路径，例如 C:\...\aioncore.exe">
+        </div>
+        <div class="formrow">
+          <div>
+            <div class="secrow-name">⏱ 跳过重试间隔</div>
+            <div class="secrow-key">推送失败后静默重试的间隔（5–3600 秒，默认 60）</div>
+          </div>
+          <div class="actions">
+            <input class="input" id="aionSkipSec" type="number" min="5" max="3600" style="width:96px">
+            <button class="btn" id="aionSave">保存</button>
+          </div>
+        </div>
         <div class="bark-actions">
           <button class="btn" id="barkTest">📨 发送测试推送</button>
           <button class="btn btn-primary" id="barkSave">保存</button>

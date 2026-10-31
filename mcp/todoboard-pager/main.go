@@ -60,15 +60,17 @@ var (
 
 // monitorState 全部驻留内存，进程结束即失效。
 type monitorState struct {
-	running   bool
-	section   string
-	sectionID int64
-	key       string
-	interval  int
-	target    string
-	hash      string
-	prev      []task
-	pending   string // 待重发的通知（鉴权/网络失败时不丢，按间隔重试）
+	running    bool
+	section    string
+	sectionID  int64
+	key        string
+	interval   int
+	target     string
+	hash       string
+	prev       []task
+	pending    string // 待重发的通知（鉴权/网络失败时不丢，按间隔重试）
+	subID      int64  // 主程序 /api/monitors 里本会话的注册 id（0 = 未注册）
+	kernelPush bool   // 主程序内核接管推送时为 true（本进程只轮询算 diff，不再自己发通知）
 }
 
 type task struct {
@@ -325,6 +327,103 @@ func leaseLoop() {
 	}
 }
 
+/* ---------------- 主程序盯盘注册（T123） ---------------- */
+
+// monitorEndpoint 调主程序的 /api/monitors 系列接口，统一带分区 key。
+func monitorEndpoint(method, path, key string, body any) (int, []byte, error) {
+	url := strings.TrimRight(boardBase, "/") + path
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, url, rdr)
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("X-Auth-Key", key)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("连接待办看板失败（%s）：%v", boardBase, err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, raw, nil
+}
+
+// registerMonitor 在主程序登记盯盘；成功返回注册 id。
+func registerMonitor(sectionID int64, key string, interval int) (int64, error) {
+	body := map[string]any{
+		"section_id":      sectionID,
+		"target_type":     targetTypeForRegister(),
+		"team_id":         targetTeam,
+		"slot_id":         targetSlot,
+		"conversation_id": envConvID,
+		"interval_sec":    interval,
+		"token":           envToken,
+	}
+	code, raw, err := monitorEndpoint(http.MethodPost, "/api/monitors", key, body)
+	if err != nil {
+		return 0, err
+	}
+	if code < 200 || code >= 300 {
+		return 0, fmt.Errorf("主程序拒绝注册：HTTP %d %s", code, truncate(string(raw), 160))
+	}
+	var out struct {
+		Monitor struct {
+			ID int64 `json:"id"`
+		} `json:"monitor"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return 0, fmt.Errorf("解析注册响应失败: %w", err)
+	}
+	if out.Monitor.ID == 0 {
+		return 0, errors.New("注册响应里没有 id")
+	}
+	return out.Monitor.ID, nil
+}
+
+func targetTypeForRegister() string {
+	if targetKind == "team" {
+		return "team"
+	}
+	return "conv"
+}
+
+// heartbeatMonitor 回报存活；status 为 HTTP 状态码（404 = 盯盘已被清除）。
+// 返回 pushBy 告诉本进程该由谁推送（主程序内核接管时不再重复发）。
+func heartbeatMonitor(sectionID int64, key string) (int, string, error) {
+	body := map[string]any{"section_id": sectionID, "conversation_id": envConvID, "token": envToken}
+	code, raw, err := monitorEndpoint(http.MethodPut, "/api/monitors/heartbeat", key, body)
+	if err != nil {
+		return 0, "", err
+	}
+	var out struct {
+		PushBy string `json:"push_by"`
+	}
+	if code >= 200 && code < 300 {
+		_ = json.Unmarshal(raw, &out)
+	}
+	return code, out.PushBy, nil
+}
+
+func unregisterMonitor(subID int64, key string) {
+	if subID == 0 {
+		return
+	}
+	if code, _, err := monitorEndpoint(http.MethodDelete, fmt.Sprintf("/api/monitors/%d/self", subID), key, nil); err != nil {
+		dbg("注销盯盘失败：%v", err)
+	} else if code >= 300 && code != http.StatusNotFound {
+		dbg("注销盯盘返回 HTTP %d", code)
+	}
+}
+
 /* ---------------- 待办看板 API ---------------- */
 
 func boardTasks(section, key, status string) (taskListResponse, []byte, error) {
@@ -501,14 +600,22 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 	stop := make(chan struct{})
 	monitorStop = stop
 
+	// 先在主程序登记（T123）：登记成功后推送由主程序内核负责，本进程只轮询 + 心跳
+	subID, regErr := registerMonitor(sectionID, key, interval)
+	if regErr != nil {
+		dbg("主程序登记盯盘失败（本地继续轮询、由本进程推送）：%v", regErr)
+	}
+
 	stateMu.Lock()
 	state = monitorState{
-		running:   true,
-		section:   section,
-		sectionID: sectionID,
-		key:       key,
-		interval:  interval,
-		target:    currentTarget(),
+		running:    true,
+		section:    section,
+		sectionID:  sectionID,
+		key:        key,
+		interval:   interval,
+		target:     currentTarget(),
+		subID:      subID,
+		kernelPush: regErr == nil,
 	}
 	stateMu.Unlock()
 
@@ -518,11 +625,30 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 		// 一律用启动时解析出的分区 ID 轮询：分区改名后依然能盯
 		pollSection := strconv.FormatInt(sectionID, 10)
 		poll := func() {
-			// 先补发上一条没发出去的通知（读 key 失败 / 401 / 网络问题都不丢，按间隔无上限重试）
+			// 心跳（T123）：404 = 用户已在别处清除盯盘 → 彻底停止轮询，不再注册、不再推送
+			if code, pushBy, err := heartbeatMonitor(sectionID, key); err == nil {
+				if code == http.StatusNotFound {
+					dbg("主程序里盯盘已被清除，停止本地轮询")
+					stopMonitor()
+					return
+				}
+				if pushBy != "" {
+					stateMu.Lock()
+					state.kernelPush = pushBy == "kernel"
+					stateMu.Unlock()
+				}
+			} else {
+				dbg("心跳失败（不影响轮询）：%v", err)
+			}
+			stateMu.Lock()
+			managed := state.kernelPush
+			stateMu.Unlock()
+
+			// 先补发上一条没发出去的通知（主程序内核接管推送时不再补发，避免重复通知）
 			stateMu.Lock()
 			pend, iv := state.pending, state.interval
 			stateMu.Unlock()
-			if pend != "" {
+			if pend != "" && !managed {
 				if err := sendMessage(pend); err != nil {
 					dbg("补发通知失败（%v），将按 %d 秒继续重试", err, iv)
 				} else {
@@ -559,6 +685,11 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 				dbg("基线建立：%s", summarize(list))
 				return
 			}
+			if managed {
+				dbg("推送由主程序内核负责，本进程只更新基线（新增 %d / 变更 %d / 删除 %d）",
+					len(added), len(changed), len(deleted))
+				return
+			}
 			msg := buildNotice(list, added, changed, deleted)
 			// 先落 pending 再发：失败（读 key 失败 / 401 / 403 / 网络）时由下一轮 tick 补发，不丢消息
 			stateMu.Lock()
@@ -585,6 +716,7 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 	}()
 }
 
+// stopMonitor 只停本地轮询；注销主程序注册请用 stopMonitorAndUnregister。
 func stopMonitor() {
 	stateMu.Lock()
 	if monitorStop != nil {
@@ -593,6 +725,15 @@ func stopMonitor() {
 	}
 	state = monitorState{}
 	stateMu.Unlock()
+}
+
+// stopMonitorAndUnregister 先注销主程序里的注册，再停本地轮询。
+func stopMonitorAndUnregister() {
+	st := currentMonitor()
+	if st.subID != 0 && st.key != "" {
+		unregisterMonitor(st.subID, st.key)
+	}
+	stopMonitor()
 }
 
 func currentMonitor() monitorState {
@@ -773,8 +914,8 @@ func callTool(name string, raw json.RawMessage) (string, bool) {
 		return fmt.Sprintf("已开始盯盘 %s，间隔 %d 秒；后续有变化会向本会话发送[通知]。", summarize(list), interval), false
 
 	case "stop_monitor":
-		stopMonitor()
-		return "已停止盯盘。", false
+		stopMonitorAndUnregister()
+		return "已停止盯盘，并已清除主程序里的注册。", false
 
 	case "list_tasks":
 		var in struct {

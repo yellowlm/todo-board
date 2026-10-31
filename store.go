@@ -55,7 +55,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at  TEXT    NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_tasks_section ON tasks(section_id, due_at);`
+CREATE INDEX IF NOT EXISTS idx_tasks_section ON tasks(section_id, due_at);
+
+
+`
 )
 
 type Section struct {
@@ -115,6 +118,10 @@ func OpenStore(path string) (*Store, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("初始化数据表失败: %w", err)
+	}
+	if err := migrateSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("升级数据表失败: %w", err)
 	}
 	if err := migrateTaskStatus(db); err != nil {
 		db.Close()

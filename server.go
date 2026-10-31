@@ -43,7 +43,8 @@ type counts struct {
 type boardSection struct {
 	Section
 	counts
-	Tasks []Task `json:"tasks"`
+	MonitorCount int    `json:"monitor_count"`
+	Tasks        []Task `json:"tasks"`
 }
 
 type boardPayload struct {
@@ -430,6 +431,7 @@ func (s *Server) routes(mux *http.ServeMux, static fs.FS) {
 	mux.HandleFunc("PUT /api/settings/bind", s.handleBindPut)
 	mux.HandleFunc("GET /api/settings/poll", s.handlePollGet)
 	mux.HandleFunc("PUT /api/settings/poll", s.handlePollPut)
+	mux.HandleFunc("PUT /api/settings/aion", s.handleAionPut)
 	mux.HandleFunc("POST /api/window/close", s.handleWindowClose)
 	mux.HandleFunc("POST /api/window/hide", s.handleWindowHide)
 	mux.HandleFunc("POST /api/window/drag", s.handleWindowDrag)
@@ -440,6 +442,15 @@ func (s *Server) routes(mux *http.ServeMux, static fs.FS) {
 
 	mux.HandleFunc("POST /api/editor/ready", s.handleEditorReady)
 	mux.HandleFunc("GET /api/editor/context", s.handleEditorContext)
+
+	// pager 面（MCP 用）：注册/心跳/注销均需分区 key
+	mux.HandleFunc("POST /api/monitors", s.authExternal(s.handleMonitorCreate))
+	mux.HandleFunc("PUT /api/monitors/heartbeat", s.authExternal(s.handleMonitorHeartbeat))
+	mux.HandleFunc("DELETE /api/monitors/{id}/self", s.authExternal(s.handleMonitorDeleteSelf))
+	// 管理面（内置 UI 用）：与「删除分区」同级，不带 key；全清必须显式 all=1
+	mux.HandleFunc("DELETE /api/monitors/{id}", s.handleMonitorDelete)
+	mux.HandleFunc("DELETE /api/monitors", s.handleMonitorDeleteMany)
+	mux.HandleFunc("GET /api/monitors", s.handleMonitorList)
 
 	mux.HandleFunc("GET /api/section", s.authExternal(s.handleExternalSection))
 	mux.HandleFunc("GET /api/tasks", s.authExternal(s.handleExternalTaskList))
@@ -670,13 +681,14 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 	for _, t := range tasks {
 		bySection[t.SectionID] = append(bySection[t.SectionID], t)
 	}
+	monitorCounts, _ := s.store.MonitorCountsBySection()
 	now := time.Now().Format(timeLayout)
 	payload := boardPayload{
 		Date:     time.Now().Format("2006-01-02"),
 		Sections: []boardSection{},
 	}
 	for _, sec := range sections {
-		bs := boardSection{Section: sec, Tasks: []Task{}}
+		bs := boardSection{Section: sec, Tasks: []Task{}, MonitorCount: monitorCounts[sec.ID]}
 		group := bySection[sec.ID]
 		bs.counts = tally(group, now)
 		bs.Tasks = append(bs.Tasks, group...)
@@ -982,16 +994,19 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		autostart = s.AutostartStatus()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":           Version,
-		"api_base":          s.BaseURL(),
-		"db_path":           s.dbPath,
-		"autostart":         autostart,
-		"port":              s.Port(),
-		"bind":              s.BindConfig(),
-		"listening":         s.Listening(),
-		"lan_open":          HasNonLoopback(s.Listening()),
-		"default_bind":      defaultBind,
-		"poll_interval_sec": loadPollInterval(),
+		"version":            Version,
+		"api_base":           s.BaseURL(),
+		"db_path":            s.dbPath,
+		"autostart":          autostart,
+		"port":               s.Port(),
+		"bind":               s.BindConfig(),
+		"listening":          s.Listening(),
+		"lan_open":           HasNonLoopback(s.Listening()),
+		"default_bind":       defaultBind,
+		"poll_interval_sec":  loadPollInterval(),
+		"aionui_helper_path": loadAppSettings().HelperPath,
+		"aionui_base_url":    loadAppSettings().BaseURL,
+		"skip_interval_sec":  loadAppSettings().SkipInterval,
 	})
 }
 
@@ -1540,13 +1555,15 @@ func (s *Server) handleWebSections(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	monitorCounts, _ := s.store.MonitorCountsBySection()
 	type webSection struct {
 		Section
 		SectionCounts
+		MonitorCount int `json:"monitor_count"`
 	}
 	out := make([]webSection, 0, len(sections))
 	for _, sec := range sections {
-		out = append(out, webSection{Section: sec, SectionCounts: counts[sec.ID]})
+		out = append(out, webSection{Section: sec, SectionCounts: counts[sec.ID], MonitorCount: monitorCounts[sec.ID]})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sections": out, "count": len(out), "total": total})
 }

@@ -303,3 +303,19 @@ svg.i.sm { width: 14px; height: 14px; }
 .admin-id { color: var(--text-3); font-size: 11px; }
 .admin-count { font-size: 12px; color: var(--text-2); white-space: nowrap; }
 .admin-row .btn { height: 24px; padding: 0 8px; font-size: 12px; }
+
+/* ---- 盯盘（T127）---- */
+.mon-badge {
+  font-size: 11.5px; line-height: 16px; padding: 0 6px; flex: none;
+  color: var(--text-3); background: var(--hover);
+  border: 1px solid var(--border); border-radius: 999px; white-space: nowrap;
+}
+.mon-admin { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: 6px; }
+.mon-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
+.mon-row { display: flex; align-items: center; gap: 8px; font-size: 12px; min-width: 0; }
+.mon-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mon-meta { color: var(--text-3); white-space: nowrap; flex: none; }
+.mon-status { font-variant-numeric: tabular-nums; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-3); white-space: nowrap; flex: none; }
+.mon-status.ok { color: #34D399; border-color: rgba(52, 211, 153, .45); background: rgba(52, 211, 153, .12); }
+.mon-status.err { color: #F87171; border-color: rgba(248, 113, 113, .45); background: rgba(248, 113, 113, .12); }
+.mon-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }

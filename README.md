@@ -121,6 +121,15 @@
 - 设置页填三项：服务器地址、设备 Key、图标 URL（可留空），填完可以先「发送测试推送」验证。
 - 每个分区有一个「完成推送」开关（分区管理里），任务本身还可以单独选「继承分区 / 开 / 关」。
 
+**盯盘（主程序负责）**
+
+- 盯盘注册存在主程序数据库里（`monitor_subs` / `monitor_tokens` / `monitor_pending`），**进程重启后自动恢复**，基线沿用库里的快照，停机期间的变化下次推送会补报，不会被吞。
+- 主程序内存里一个分区一个协程在算 diff（新增 / 变更标题、描述、状态、截止 / 删除 / 分区名与推送开关变化），推送统一走 **AIONUI HELPER** 子进程（`team send-message` / `session send-message`，正文与目标用 stdin JSON `{"to","message"}`），token 只进子进程环境，不进日志、不进接口响应。
+- 失败（helper 未配置 / 401 / 403 / 团队不存在）**静默跳过**，按「跳过重试间隔」重试、不设最大次数；期间的变更在 `monitor_pending` 里按条累积，恢复后**合并成一条**推出去（「共 N 条变化：新增 x、变更 y、删除 z」+ 标题列表），成功即清空。
+- 分区标题栏有 `👁 N` 盯盘数（0 也显示）；设置里「分区管理」每个分区行下面列出该分区的盯盘（友好名、`#分区ID`、最后心跳、状态 200/401/404/-1），可单条删除，也可「清除本分区盯盘」/「清除全部盯盘」（都会二次确认并报条数）。
+- 设置页两个新项：**AIONUI HELPER 路径**（留空＝不推送，界面会提示「未配置：盯盘推送会被跳过」）、**跳过重试间隔**（默认 60 秒，范围 5–3600）。保存后立即生效，不用重启。
+- 团队/单聊保活：配了宿主地址（`aionui_base_url`）后，主程序每 60 秒对 `POST {host}/api/teams/{id}/active-lease`（单聊用 `/api/conversations/{id}/active-lease`）续租，token 轮流试，任一 200 即算成功。
+
 **MCP（给 AI 助手用）**
 
 - 按上面「MCP」一节填好注册 JSON；启动时 Agent 需要向你要三样东西：分区（名称或 `#id`）、该分区的 KEY、刷新间隔（默认 60 秒，最小 1 秒）。
@@ -271,12 +280,20 @@ build.bat
 
 | 路径 | 说明 |
 | --- | --- |
-| `GET /api/settings` | 版本 / 接口地址 / 数据文件 / 自启状态 / `bind` / `listening` / `port` / `lan_open` / `default_bind` / `poll_interval_sec` |
+| `GET /api/settings` | 版本 / 接口地址 / 数据文件 / 自启状态 / `bind` / `listening` / `port` / `lan_open` / `default_bind` / `poll_interval_sec` / `aionui_helper_path` / `aionui_base_url` / `skip_interval_sec` |
 | `PUT /api/settings/bind` | 保存监听地址：body `{"binds":[…]}`，返回 `ok` / `bind` / `listening` / `failures` / `error` |
-| `PUT /api/settings/poll` | 保存自动刷新间隔：body `{"interval_sec":N}`（1–300），返回 `ok` / `interval_sec` |
+| `PUT /api/settings/poll` | 保存自动刷新间隔：body `{"interval_sec":N}`（1–300），返回 ok / interval_sec |
+| `PUT /api/settings/aion` | 保存盯盘推送设置：body `{"aionui_helper_path":"…","aionui_base_url":"…","skip_interval_sec":60}`（间隔 5–3600，路径可空），返回保存后的完整设置 |
 | `POST /api/settings/autostart` | 开关开机自启动 |
 | `GET /api/bark` | 推送配置（key 只返回掩码） |
 | `PUT /api/bark` | 保存推送配置 |
+| `POST /api/monitors` | 注册盯盘（`X-Auth-Key` 分区密钥）：body `{"section_id","target_type":"team|conv","team_id","slot_id","conversation_id","interval_sec","token"}`，同键幂等 |
+| `PUT /api/monitors/heartbeat` | pager 面心跳（**需 `X-Auth-Key`**，只更新不新建）：body `{"conversation_id","token"}`；行不存在返回 **404**（＝盯盘已被清除） |
+| `GET /api/monitors?section=N` | 管理面（**不带 key**）：盯盘列表，可省略 `section` 列全部；含 `last_seen` / `last_status` / 友好名，**不含 token / baseline** |
+| `DELETE /api/monitors/{id}` | 管理面（**不带 key**）：删除单条盯盘 |
+| `DELETE /api/monitors?section=N` | 管理面：只清该分区（**不带 key**） |
+| `DELETE /api/monitors?all=1` | 管理面：清全部；**不带 `all=1` 直接删返回 400**（防止误清） |
+| `DELETE /api/monitors/{id}/self` | pager 面注销（**需 `X-Auth-Key`**，只能删本分区的行，跨区返回 404） |
 | `POST /api/bark/test` | 发送测试推送 |
 
 #### 实时

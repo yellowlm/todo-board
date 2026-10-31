@@ -154,6 +154,17 @@ Errors are `{"error": "<message>"}` with a Chinese message:
 - New tasks are always `open`; `status` / `done` are ignored on create.
 - The built-in UI subscribes to the `/api/events` SSE stream, so changes show up within about a second. If SSE is unavailable it falls back to polling every `poll_interval_sec` (default 5 s, 1-300, configurable in settings). Agents may subscribe to the same stream: events look like `data: {"type":"<kind>"}`, a `: ping` comment arrives every 25 s, and the server sends `retry: 2000`.
 
+## MCP vs. the in-app watcher
+
+The bundled `todoboard-pager` MCP tool no longer delivers the notifications itself when a
+current build of the board is running: it registers the watch through `POST /api/monitors`,
+reports `PUT /api/monitors/heartbeat` on every poll, and unregisters with
+`DELETE /api/monitors/{id}/self` (section key required) on `stop_monitor`. Listing and deleting
+watches from the built-in UI is a separate management surface that takes no key. Delivery (AIONUI HELPER subprocess) is owned by
+the board process, so the same change is never announced twice. If a heartbeat returns **404**
+the watch was cleared from another client: the pager stops polling immediately and never
+re-registers on its own. Restart the monitor from the agent side if you still need it.
+
 ## MCP: todoboard-pager
 
 A companion MCP server (`Dev\build\todoboard-pager.exe`, source in `mcp/todoboard-pager/`) that keeps

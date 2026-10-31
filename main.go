@@ -266,6 +266,8 @@ func main() {
 	defer store.Close()
 
 	srv := NewServer(store, dbPath)
+	kernel := StartMonitorKernel(store)
+	defer kernel.Stop()
 	binds := loadBinds()
 	failures, err := srv.Start(*port, binds)
 	if err != nil {
