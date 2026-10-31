@@ -58,7 +58,7 @@
 
 - **英文 Skill：`skills/todo-board/SKILL.md`** —— Agent 读写任务的入口文档，写明基址、`X-Auth-Key` 认证、
   各端点、状态取值（`open` / `doing` / `done`）、错误码与示例，Agent 照着调即可，不需要人教。
-- **MCP：`mcp/todoboard-pager`（产物 `todoboard-pager.exe`）** —— 给 AionUI 这类 MCP 宿主的盯盘工具。
+- **MCP：`mcp/todoboard-pager`（产物 `todoboard-pager.exe`）** —— 给 AionUI 这类 MCP 宿主的 Pager 工具。
   启动时绑定「分区 + 该分区 KEY + 刷新间隔」，之后看板一有变化就在会话里发通知（新增任务逐条列标题，删除带
   `[删除]` 前缀）。共 4 个工具：`start_monitor` / `stop_monitor` / `list_tasks` / `set_status`；不写任何本地文件。
 - **内置 HTTP API** —— `X-Auth-Key` 按分区隔离，Agent 可增删改查任务、改三态；还可以订阅 `/api/events`
@@ -121,19 +121,19 @@
 - 设置页填三项：服务器地址、设备 Key、图标 URL（可留空），填完可以先「发送测试推送」验证。
 - 每个分区有一个「完成推送」开关（分区管理里），任务本身还可以单独选「继承分区 / 开 / 关」。
 
-**盯盘（主程序负责）**
+**Pager 连接（主程序负责）**
 
-- 盯盘注册存在主程序数据库里（`monitor_subs` / `monitor_tokens` / `monitor_pending`），**进程重启后自动恢复**，基线沿用库里的快照，停机期间的变化下次推送会补报，不会被吞。
+- Pager 连接注册存在主程序数据库里（`monitor_subs` / `monitor_tokens` / `monitor_pending`），**进程重启后自动恢复**，基线沿用库里的快照，停机期间的变化下次推送会补报，不会被吞。
 - 主程序内存里一个分区一个协程在算 diff（新增 / 变更标题、描述、状态、截止 / 删除 / 分区名与推送开关变化），推送统一走 **AIONUI HELPER** 子进程（`team send-message` / `session send-message`，正文与目标用 stdin JSON `{"to","message"}`），token 只进子进程环境，不进日志、不进接口响应。
 - 失败（helper 未配置 / 401 / 403 / 团队不存在）**静默跳过**，按「跳过重试间隔」重试、不设最大次数；期间的变更在 `monitor_pending` 里按条累积，恢复后**合并成一条**推出去（「共 N 条变化：新增 x、变更 y、删除 z」+ 标题列表），成功即清空。
-- 分区标题栏有 `👁 N` 盯盘数（0 也显示）；设置里「分区管理」每个分区行下面列出该分区的盯盘（友好名、`#分区ID`、最后心跳、状态 200/401/404/-1），可单条删除，也可「清除本分区盯盘」/「清除全部盯盘」（都会二次确认并报条数）。
-- 设置页两个新项：**AIONUI HELPER 路径**（留空＝不推送，界面会提示「未配置：盯盘推送会被跳过」）、**跳过重试间隔**（默认 60 秒，范围 5–3600）。保存后立即生效，不用重启。
+- 分区标题栏有 `📋 N`（任务数）与 `💡 N`（Pager 连接数，0 也显示）；设置里「分区管理」每个分区行下面列出该分区的 Pager 连接（友好名、`#分区ID`、最后心跳、状态 200/401/404/-1），可单条删除，也可「清除本分区 Pager 连接」/「清除全部 Pager 连接」（都会二次确认并报条数）。
+- 设置页两个新项：**AIONUI HELPER 路径**（留空＝不推送，界面会提示「未配置：Pager 推送会被跳过」）、**跳过重试间隔**（默认 60 秒，范围 5–3600）。保存后立即生效，不用重启。
 - 团队/单聊保活：配了宿主地址（`aionui_base_url`）后，主程序每 60 秒对 `POST {host}/api/teams/{id}/active-lease`（单聊用 `/api/conversations/{id}/active-lease`）续租，token 轮流试，任一 200 即算成功。
 
 **MCP（给 AI 助手用）**
 
 - 按上面「MCP」一节填好注册 JSON；启动时 Agent 需要向你要三样东西：分区（名称或 `#id`）、该分区的 KEY、刷新间隔（默认 60 秒，最小 1 秒）。
-- 一共 4 个工具：开始盯盘、停止盯盘、列任务、改状态。
+- 一共 4 个工具：开始 Pager 连接、停止 Pager 连接、列任务、改状态。
 - 看板有变化会收到通知，格式是「`[通知] 看板有变化：共 N 条，新增 M 条`」，后面逐条列出新增任务标题；删除的任务会带「[删除]」前缀。
 ## 安装 / 运行
 
@@ -190,7 +190,7 @@ build.bat
 - 配置存在 `%LOCALAPPDATA%\AgentTodoBoard\listen.json`，形如 `{"binds":["127.0.0.1"]}`；文件损坏会备份成 `.bad` 并回退到仅本机。
 - **安全提醒**：一旦绑了非环回地址，网页端（`/`、`/app`）没有鉴权，同网段任何人都能读写；`X-Auth-Key` 只保护 `/api/tasks` 那套给 Agent 用的接口。设置页会在这种情况下显示黄色警示。
 
-## MCP：todoboard-pager（AionUI 常驻盯盘）
+## MCP：todoboard-pager（AionUI 常驻 Pager）
 
 `Dev\build\todoboard-pager.exe`（源码 `mcp/todoboard-pager/`）是一个 stdio MCP 服务，用于在 AionUI 会话里
 常驻盯一个分区：看板有变化就把新增任务标题推给当前会话（团队与单聊都适用）。
@@ -208,20 +208,20 @@ build.bat
 ```
 
 四个环境变量 `AIONUI_BASE_URL` / `AIONUI_RUNTIME_TOKEN` / `AIONUI_USER_ID` / `AIONUI_CONVERSATION_ID`
-由 AionUI 的 agent 宿主注入，不必手填；缺失时 `initialize` / `tools/list` 仍可正常应答，只有「盯盘 / 发消息」
+由 AionUI 的 agent 宿主注入，不必手填；缺失时 `initialize` / `tools/list` 仍可正常应答，只有「Pager 连接 / 发消息」
 会返回工具错误，进程不会退出。
 
 启动必需三项：**分区（名称或 `#<id>`）、该分区的 KEY、刷新间隔秒（默认 60，最小 1）**。
 
 | 工具 | 参数 | 说明 |
 | --- | --- | --- |
-| `start_monitor` | `{section, key, interval_sec}` | 开始盯盘（非阻塞） |
-| `stop_monitor` | `{}` | 停止盯盘 |
+| `start_monitor` | `{section, key, interval_sec}` | 开始 Pager 连接（非阻塞） |
+| `stop_monitor` | `{}` | 停止 Pager 连接 |
 | `list_tasks` | `{status?}` | `open` / `doing` / `done` / `all` |
 | `set_status` | `{task_id, status}` | `open` / `doing` / `done` |
 
 - `start_monitor` 的参数相同时是**幂等**的：重复调用不会重建基线、也不会丢掉期间发生的变化；只有换分区或换间隔才会重新开始盯。
-- `section` 可写分区名、数字 ID 或 `#数字`；盯盘按分区 ID 追踪，分区改名后仍能继续收到通知。
+- `section` 可写分区名、数字 ID 或 `#数字`；Pager 连接按分区 ID 追踪，分区改名后仍能继续收到通知。
 
 通知形如 `[通知] 看板有变化：共 N 条，新增 M 条`，随后逐条列出全部新增任务标题；被删除的任务带 `- [删除] 标题` 前缀，
 只改描述/截止等也算变化。
@@ -283,14 +283,14 @@ build.bat
 | `GET /api/settings` | 版本 / 接口地址 / 数据文件 / 自启状态 / `bind` / `listening` / `port` / `lan_open` / `default_bind` / `poll_interval_sec` / `aionui_helper_path` / `aionui_base_url` / `skip_interval_sec` |
 | `PUT /api/settings/bind` | 保存监听地址：body `{"binds":[…]}`，返回 `ok` / `bind` / `listening` / `failures` / `error` |
 | `PUT /api/settings/poll` | 保存自动刷新间隔：body `{"interval_sec":N}`（1–300），返回 ok / interval_sec |
-| `PUT /api/settings/aion` | 保存盯盘推送设置：body `{"aionui_helper_path":"…","aionui_base_url":"…","skip_interval_sec":60}`（间隔 5–3600，路径可空），返回保存后的完整设置 |
+| `PUT /api/settings/aion` | 保存Pager 推送设置：body `{"aionui_helper_path":"…","aionui_base_url":"…","skip_interval_sec":60}`（间隔 5–3600，路径可空），返回保存后的完整设置 |
 | `POST /api/settings/autostart` | 开关开机自启动 |
 | `GET /api/bark` | 推送配置（key 只返回掩码） |
 | `PUT /api/bark` | 保存推送配置 |
-| `POST /api/monitors` | 注册盯盘（`X-Auth-Key` 分区密钥）：body `{"section_id","target_type":"team|conv","team_id","slot_id","conversation_id","interval_sec","token"}`，同键幂等 |
-| `PUT /api/monitors/heartbeat` | pager 面心跳（**需 `X-Auth-Key`**，只更新不新建）：body `{"conversation_id","token"}`；行不存在返回 **404**（＝盯盘已被清除） |
-| `GET /api/monitors?section=N` | 管理面（**不带 key**）：盯盘列表，可省略 `section` 列全部；含 `last_seen` / `last_status` / 友好名，**不含 token / baseline** |
-| `DELETE /api/monitors/{id}` | 管理面（**不带 key**）：删除单条盯盘 |
+| `POST /api/monitors` | 注册Pager 连接（`X-Auth-Key` 分区密钥）：body `{"section_id","target_type":"team|conv","team_id","slot_id","conversation_id","interval_sec","token"}`，同键幂等 |
+| `PUT /api/monitors/heartbeat` | pager 面心跳（**需 `X-Auth-Key`**，只更新不新建）：body `{"conversation_id","token"}`；行不存在返回 **404**（＝Pager 连接已被清除） |
+| `GET /api/monitors?section=N` | 管理面（**不带 key**）：Pager 连接列表，可省略 `section` 列全部；含 `last_seen` / `last_status` / 友好名，**不含 token / baseline** |
+| `DELETE /api/monitors/{id}` | 管理面（**不带 key**）：删除单条 Pager 连接 |
 | `DELETE /api/monitors?section=N` | 管理面：只清该分区（**不带 key**） |
 | `DELETE /api/monitors?all=1` | 管理面：清全部；**不带 `all=1` 直接删返回 400**（防止误清） |
 | `DELETE /api/monitors/{id}/self` | pager 面注销（**需 `X-Auth-Key`**，只能删本分区的行，跨区返回 404） |
@@ -321,8 +321,8 @@ Code/
     editor.html editor.js        独立编辑窗口
     web.html web.css web.js      浏览器版
     icon.png icon.ico            图标
-  mcp/todoboard-pager/          AionUI 常驻盯盘 MCP（stdio JSON-RPC）
-  agents/todo-board-watcher.md  盯盘专用 Agent 系统提示词
+  mcp/todoboard-pager/          AionUI 常驻 Pager MCP（stdio JSON-RPC）
+  agents/todo-board-watcher.md  Pager 专用 Agent 系统提示词
   skills/todo-board/SKILL.md    外部 API 说明（给 AI 代理）+ MCP 说明
   build.bat          构建脚本
 Dev/

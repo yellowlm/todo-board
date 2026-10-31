@@ -287,9 +287,11 @@ function colHtml(sec, index) {
       <div class="col-row1">
         <svg class="i sm chev" data-act="collapse"><use href="#i-chev"/></svg>
         <span class="col-name">${esc(sec.name)}</span><span class="col-id">#${sec.id}</span>
-        <span class="col-count">${sec.total}</span>
-        <span class="mon-badge" title="盯盘目标数">👁 ${Number(sec.monitor_count || 0)}</span>
+        <span class="col-count">📋 ${sec.total}</span>
+        <span class="mon-badge" title="Pager 连接数">💡 ${Number(sec.monitor_count || 0)}</span>
+        <!-- 完成进度条暂时隐藏，勿删（DOM 与 CSS 都保留）：
         <div class="sp-bar"><div class="sp-fill" style="width:${pct}%"></div></div>
+        -->
         <div class="grow"></div>
         <button class="minibtn ${sec.bark_enabled ? 'on' : ''}" data-act="bark" title="分区完成推送" aria-label="分区完成推送">${sec.bark_enabled ? '🔔' : '🔕'}</button>
         <button class="minibtn" data-act="tail" title="置于队尾" aria-label="置于队尾">⤓</button>
@@ -601,20 +603,20 @@ function bind() {
         if (act === 'mon-del') {
           const sid = Number(monBtn.dataset.sid);
           const mid = Number(monBtn.dataset.mid);
-          if (!confirm(`确定删除这一条盯盘（#${sid}）？会话将不再收到该分区的通知。`)) return;
+          if (!confirm(`确定删除这一条 Pager 连接（#${sid}）？该会话将不再收到本分区的变化通知。`)) return;
           await api('DELETE', `/api/monitors/${mid}`);
-          toast('已删除该盯盘');
+          toast('已删除该 Pager 连接');
         } else if (act === 'mon-clear') {
           const sid = Number(monBtn.dataset.sid);
           const n = monBtn.closest('.mon-admin').querySelectorAll('.mon-row').length;
-          if (!confirm(`确定清除分区 #${sid} 的全部 ${n} 条盯盘？清除后相关会话不再收到通知。`)) return;
+          if (!confirm(`确定清除分区 #${sid} 的全部 ${n} 个 Pager 连接？清除后相关会话不再收到通知。`)) return;
           await api('DELETE', `/api/monitors?section=${sid}`);
-          toast(`已清除分区 #${sid} 的 ${n} 条盯盘`);
+          toast(`已清除分区 #${sid} 的 ${n} 个 Pager 连接`);
         } else {
           const n = document.querySelectorAll('.mon-row').length;
-          if (!confirm(`确定清除全部盯盘共 ${n} 条？所有会话都不再收到盯盘通知。`)) return;
+          if (!confirm(`确定清除全部 Pager 连接共 ${n} 个？所有会话都不再收到变化通知。`)) return;
           await api('DELETE', '/api/monitors?all=1');
-          toast(`已清除全部 ${n} 条盯盘`);
+          toast(`已清除全部 ${n} 个 Pager 连接`);
         }
         await afterMonitorChange();
       } catch (err) {
@@ -804,7 +806,7 @@ function monitorRowHtml(sid, m) {
     <span class="mon-meta">#${sid}</span>
     <span class="mon-meta" title="${esc(m.last_seen || '')}">${esc(relTime(m.last_seen))}</span>
     <span class="mon-status ${monStatusClass(m.last_status)}">${esc(monStatusText(m.last_status))}</span>
-    <button class="btn danger" data-act="mon-del" data-mid="${m.id}" data-sid="${sid}" title="删除该盯盘">🗑</button>
+    <button class="btn danger" data-act="mon-del" data-mid="${m.id}" data-sid="${sid}" title="删除该 Pager 连接">🗑</button>
   </div>`;
 }
 
@@ -817,18 +819,18 @@ async function loadMonitorPanels() {
     try {
       const res = await api('GET', `/api/monitors?section=${sid}`);
       const list = res.monitors || [];
-      el.innerHTML = `<div class="mon-head">👁 盯盘 ${list.length} 个目标</div>` +
-        (list.length ? list.map((m) => monitorRowHtml(sid, m)).join('') : '<div class="mon-meta">该分区暂无盯盘</div>') +
-        `<div class="mon-actions"><button class="btn danger" data-act="mon-clear" data-sid="${sid}"${list.length ? '' : ' disabled'}>清除本分区盯盘</button></div>`;
+      el.innerHTML = `<div class="mon-head">💡 当前 Pager 连接：${list.length}</div>` +
+        (list.length ? list.map((m) => monitorRowHtml(sid, m)).join('') : '<div class="mon-meta">该分区暂无 Pager 连接</div>') +
+        `<div class="mon-actions"><button class="btn danger" data-act="mon-clear" data-sid="${sid}"${list.length ? '' : ' disabled'}>清除本分区 Pager 连接</button></div>`;
     } catch (e) {
-      el.innerHTML = `<div class="mon-meta">盯盘读取失败：${esc(e.message)}</div>`;
+      el.innerHTML = `<div class="mon-meta">Pager 读取失败：${esc(e.message)}</div>`;
     }
   }));
   const first = nodes[0];
   if (first && !first.querySelector('[data-act="mon-clear-all"]')) {
     const wrap = document.createElement('div');
     wrap.className = 'mon-actions';
-    wrap.innerHTML = '<button class="btn danger" data-act="mon-clear-all">清除全部盯盘</button>';
+    wrap.innerHTML = '<button class="btn danger" data-act="mon-clear-all">清除全部 Pager 连接</button>';
     first.appendChild(wrap);
   }
 }
@@ -846,7 +848,7 @@ async function renderSectionAdmin() {
       <span class="admin-count">${s.total || 0} 条任务</span>
       <button class="btn danger" data-del="${s.id}">🗑️ 删除</button>
     </div>
-    <div class="mon-admin" data-mon="${s.id}"><div class="mon-meta">盯盘：读取中…</div></div>`).join('');
+    <div class="mon-admin" data-mon="${s.id}"><div class="mon-meta">Pager：读取中…</div></div>`).join('');
     $('#sectionAdmin').innerHTML = rows || '<div class="secrow-key">还没有分区</div>';
     loadMonitorPanels();
   } catch (e) {
