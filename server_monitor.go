@@ -25,7 +25,8 @@ type monitorBody struct {
 	ConversationID string  `json:"conversation_id"`
 	IntervalSec    *int    `json:"interval_sec"`
 	Token          string  `json:"token"`
-	UserID         string  `json:"user_id"` // 可选：AionUI 用户 id（查友好名要三个头）
+	UserID         string  `json:"user_id"`  // 可选：AionUI 用户 id（查友好名要三个头）
+	BaseURL        string  `json:"base_url"` // 可选：该连接的 AionUI 宿主地址（Pager 注册时上报）
 }
 
 // monitorView 对外结构：绝不含 token / baseline。
@@ -74,6 +75,7 @@ func (s *Server) handleMonitorCreate(w http.ResponseWriter, r *http.Request) {
 		ConversationID: in.ConversationID,
 		IntervalSec:    interval,
 		Token:          in.Token,
+		BaseURL:        in.BaseURL,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -99,6 +101,8 @@ func (s *Server) handleMonitorHeartbeat(w http.ResponseWriter, r *http.Request) 
 	var in struct {
 		ConversationID string `json:"conversation_id"`
 		Token          string `json:"token"`
+		BaseURL        string `json:"base_url"`
+		UserID         string `json:"user_id"`
 	}
 	if !decodeBody(w, r, &in) {
 		return
@@ -107,7 +111,7 @@ func (s *Server) handleMonitorHeartbeat(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, ErrBadBody)
 		return
 	}
-	sub, err := s.store.MonitorHeartbeat(sec.ID, in.ConversationID, in.Token)
+	sub, err := s.store.MonitorHeartbeat(sec.ID, in.ConversationID, in.Token, in.BaseURL, in.UserID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			// 语义＝盯盘已被清除（pager 收到就彻底停轮询）
@@ -240,7 +244,8 @@ func (s *Server) monitorViews(subs []MonitorSub) []monitorView {
 		wg.Add(1)
 		go func(k, convID string) {
 			defer wg.Done()
-			resolveNames(cfg, k, s.store.MonitorToken(convID), convID)
+			tok, connBase := s.store.MonitorTokenInfo(convID)
+			resolveNames(cfg, k, tok, convID, connBase)
 		}(k, convID)
 	}
 	wg.Wait()
@@ -318,10 +323,12 @@ func getNames(key string) nameInfo {
 }
 
 // resolveNames 查一次并写缓存；查询中（并发）或失败都不阻塞调用方，直接回退。
-func resolveNames(cfg appSettings, key, token, convID string) {
-	if cfg.BaseURL == "" || token == "" {
-		return // 没配宿主地址 / 没有 token：直接回退
+func resolveNames(cfg appSettings, key, token, convID, connBaseURL string) {
+	base := strings.TrimRight(strings.TrimSpace(connBaseURL), "/")
+	if base == "" || token == "" {
+		return // 连接没上报地址 / 没有 token：直接回退（不再用设置页默认）
 	}
+	cfg.BaseURL = base
 	userID := loadAionUserID(convID)
 	if userID == "" {
 		return // 不知道用户 id 就查不了（aioncore 要 runtime-token + user-id + conversation-id 三个头）

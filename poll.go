@@ -11,7 +11,6 @@ import (
 
 // 应用设置（%LOCALAPPDATA%\AgentTodoBoard\settings.json）：
 //   - poll_interval_sec   前端回退轮询间隔（秒）
-//   - aionui_helper_path  AionUI helper 可执行文件路径（盯盘推送用，空＝未配置）
 //   - aionui_base_url     AionUI 宿主地址（团队/会话保活用，空＝不续租）
 //   - skip_interval_sec   推送失败后的重试间隔（秒）
 const (
@@ -26,9 +25,9 @@ const (
 
 type appSettings struct {
 	IntervalSec  int    `json:"poll_interval_sec"`
-	HelperPath   string `json:"aionui_helper_path"`
 	BaseURL      string `json:"aionui_base_url"`
 	SkipInterval int    `json:"skip_interval_sec"`
+	Port         int    `json:"port"`
 }
 
 // pollConfigPath：应用设置文件，与 bark.json / listen.json 同级
@@ -52,7 +51,9 @@ func loadAppSettings() appSettings {
 	if stored.SkipInterval >= minSkipInterval && stored.SkipInterval <= maxSkipInterval {
 		cfg.SkipInterval = stored.SkipInterval
 	}
-	cfg.HelperPath = strings.TrimSpace(stored.HelperPath)
+	if stored.Port >= 1 && stored.Port <= 65535 {
+		cfg.Port = stored.Port
+	}
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(stored.BaseURL), "/")
 	return cfg
 }
@@ -75,6 +76,13 @@ func saveAppSettings(cfg appSettings) error {
 
 func loadPollInterval() int { return loadAppSettings().IntervalSec }
 
+// savePort 只改端口，其余设置原样保留（读-改-写）。
+func savePort(n int) error {
+	cfg := loadAppSettings()
+	cfg.Port = n
+	return saveAppSettings(cfg)
+}
+
 // savePollInterval 只改轮询间隔，其余设置原样保留（读-改-写）。
 func savePollInterval(n int) error {
 	cfg := loadAppSettings()
@@ -90,19 +98,17 @@ func (s *Server) handlePollGet(w http.ResponseWriter, r *http.Request) {
 func settingsPayload() map[string]any {
 	cfg := loadAppSettings()
 	return map[string]any{
-		"poll_interval_sec":  cfg.IntervalSec,
-		"aionui_helper_path": cfg.HelperPath,
-		"aionui_base_url":    cfg.BaseURL,
-		"skip_interval_sec":  cfg.SkipInterval,
-		"skip_min":           minSkipInterval,
-		"skip_max":           maxSkipInterval,
+		"poll_interval_sec": cfg.IntervalSec,
+		"aionui_base_url":   cfg.BaseURL,
+		"skip_interval_sec": cfg.SkipInterval,
+		"skip_min":          minSkipInterval,
+		"skip_max":          maxSkipInterval,
 	}
 }
 
 // handleAionPut 保存盯盘推送相关的三项设置（读-改-写，不动其它字段）。
 func (s *Server) handleAionPut(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		HelperPath   *string `json:"aionui_helper_path"`
 		BaseURL      *string `json:"aionui_base_url"`
 		SkipInterval *int    `json:"skip_interval_sec"`
 	}
@@ -110,9 +116,7 @@ func (s *Server) handleAionPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := loadAppSettings()
-	if in.HelperPath != nil {
-		cfg.HelperPath = strings.TrimSpace(*in.HelperPath)
-	}
+
 	if in.BaseURL != nil {
 		cfg.BaseURL = strings.TrimRight(strings.TrimSpace(*in.BaseURL), "/")
 	}

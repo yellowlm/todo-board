@@ -265,6 +265,10 @@ func main() {
 	}
 	defer store.Close()
 
+	if cfgPort := loadAppSettings().Port; cfgPort >= 1 && cfgPort <= 65535 && *port == defaultPort {
+		*port = cfgPort
+		log.Printf("使用设置里保存的端口: %d", cfgPort)
+	}
 	srv := NewServer(store, dbPath)
 	kernel := StartMonitorKernel(store)
 	defer kernel.Stop()

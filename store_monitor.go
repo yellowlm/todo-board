@@ -46,6 +46,7 @@ type MonitorInput struct {
 	ConversationID string
 	IntervalSec    int
 	Token          string
+	BaseURL        string
 }
 
 func normalizeTargetType(raw string) (string, error) {
@@ -92,7 +93,7 @@ WHERE id = ?`,
 			targetType, strings.TrimSpace(in.TeamID), strings.TrimSpace(in.SlotID), interval, now, id); err != nil {
 			return MonitorSub{}, false, err
 		}
-		if err := s.UpsertMonitorToken(in.ConversationID, targetType, in.TeamID, in.SlotID, in.Token, now); err != nil {
+		if err := s.UpsertMonitorToken(in.ConversationID, targetType, in.TeamID, in.SlotID, in.Token, in.BaseURL, now); err != nil {
 			return MonitorSub{}, false, err
 		}
 		sub, err := s.MonitorByID(id)
@@ -113,7 +114,7 @@ VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
 	if err != nil {
 		return MonitorSub{}, false, err
 	}
-	if err := s.UpsertMonitorToken(in.ConversationID, targetType, in.TeamID, in.SlotID, in.Token, now); err != nil {
+	if err := s.UpsertMonitorToken(in.ConversationID, targetType, in.TeamID, in.SlotID, in.Token, in.BaseURL, now); err != nil {
 		return MonitorSub{}, false, err
 	}
 	sub, err := s.MonitorByID(id)
@@ -121,7 +122,7 @@ VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
 }
 
 // MonitorHeartbeat 只更新不新建：行不存在返回 ErrNotFound（＝盯盘已被清除）。
-func (s *Store) MonitorHeartbeat(sectionID int64, conversationID, token string) (MonitorSub, error) {
+func (s *Store) MonitorHeartbeat(sectionID int64, conversationID, token, baseURL, userID string) (MonitorSub, error) {
 	now := time.Now().Format(stampFmt)
 	res, err := s.db.Exec(`UPDATE monitor_subs SET last_seen = ?, updated_at = ? WHERE conversation_id = ? AND section_id = ?`,
 		now, now, conversationID, sectionID)
@@ -131,10 +132,13 @@ func (s *Store) MonitorHeartbeat(sectionID int64, conversationID, token string) 
 	if err := affected(res); err != nil {
 		return MonitorSub{}, err
 	}
-	if strings.TrimSpace(token) != "" {
-		if err := s.UpsertMonitorToken(conversationID, "", "", "", token, now); err != nil {
+	if strings.TrimSpace(token) != "" || strings.TrimSpace(baseURL) != "" {
+		if err := s.UpsertMonitorToken(conversationID, "", "", "", token, baseURL, now); err != nil {
 			return MonitorSub{}, err
 		}
+	}
+	if strings.TrimSpace(userID) != "" {
+		saveAionUserID(conversationID, strings.TrimSpace(userID))
 	}
 	return s.MonitorByConversation(sectionID, conversationID)
 }
@@ -248,37 +252,45 @@ func (s *Store) MonitorCountsBySection() (map[int64]int, error) {
 
 /* ---------------- token ---------------- */
 
-func (s *Store) UpsertMonitorToken(conversationID, targetType, teamID, slotID, token, now string) error {
+func (s *Store) UpsertMonitorToken(conversationID, targetType, teamID, slotID, token, baseURL, now string) error {
 	if strings.TrimSpace(conversationID) == "" {
 		return nil
 	}
 	if strings.TrimSpace(token) == "" {
 		// 没有新 token 就只补目标信息，不清空旧 token
 		_, err := s.db.Exec(`UPDATE monitor_tokens SET target_type = COALESCE(NULLIF(?, ''), target_type),
-       team_id = COALESCE(NULLIF(?, ''), team_id), slot_id = COALESCE(NULLIF(?, ''), slot_id), updated_at = ?
-WHERE conversation_id = ?`, targetType, teamID, slotID, now, conversationID)
+       team_id = COALESCE(NULLIF(?, ''), team_id), slot_id = COALESCE(NULLIF(?, ''), slot_id),
+       base_url = COALESCE(NULLIF(?, ''), base_url), updated_at = ?
+WHERE conversation_id = ?`, targetType, teamID, slotID, strings.TrimRight(strings.TrimSpace(baseURL), "/"), now, conversationID)
 		return err
 	}
 	_, err := s.db.Exec(`INSERT INTO monitor_tokens
-(conversation_id, target_type, team_id, slot_id, token, updated_at, last_status, last_status_at)
-VALUES (?, ?, ?, ?, ?, ?, 0, '')
+(conversation_id, target_type, team_id, slot_id, token, base_url, updated_at, last_status, last_status_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, 0, '')
 ON CONFLICT(conversation_id) DO UPDATE SET
   target_type = COALESCE(NULLIF(excluded.target_type, ''), target_type),
   team_id     = COALESCE(NULLIF(excluded.team_id, ''), team_id),
   slot_id     = COALESCE(NULLIF(excluded.slot_id, ''), slot_id),
   token       = excluded.token,
+  base_url    = COALESCE(NULLIF(excluded.base_url, ''), base_url),
   updated_at  = excluded.updated_at`,
-		conversationID, targetType, teamID, slotID, token, now)
+		conversationID, targetType, teamID, slotID, token, strings.TrimRight(strings.TrimSpace(baseURL), "/"), now)
 	return err
 }
 
 // MonitorToken 取某会话的 token（不存在返回空串，不报错：token 缺失按「跳过」处理）。
 func (s *Store) MonitorToken(conversationID string) string {
-	var tok string
-	if err := s.db.QueryRow(`SELECT token FROM monitor_tokens WHERE conversation_id = ?`, conversationID).Scan(&tok); err != nil {
-		return ""
-	}
+	tok, _ := s.MonitorTokenInfo(conversationID)
 	return tok
+}
+
+// MonitorTokenInfo 取该连接的 token 与它上报的 base_url（没有则空串）。
+func (s *Store) MonitorTokenInfo(conversationID string) (token, baseURL string) {
+	var tok, base string
+	if err := s.db.QueryRow(`SELECT token, COALESCE(base_url, '') FROM monitor_tokens WHERE conversation_id = ?`, conversationID).Scan(&tok, &base); err != nil {
+		return "", ""
+	}
+	return tok, base
 }
 
 func (s *Store) SetMonitorTokenStatus(conversationID string, status int, at string) error {
@@ -310,11 +322,12 @@ type LeaseTarget struct {
 	TargetType     string
 	TeamID         string
 	ConversationID string
+	BaseURL        string
 	Tokens         []string
 }
 
 func (s *Store) LeaseTargets() ([]LeaseTarget, error) {
-	rows, err := s.db.Query(`SELECT conversation_id, target_type, team_id, token FROM monitor_tokens ORDER BY updated_at DESC`)
+	rows, err := s.db.Query(`SELECT conversation_id, target_type, team_id, token, COALESCE(base_url, '') FROM monitor_tokens ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -322,8 +335,8 @@ func (s *Store) LeaseTargets() ([]LeaseTarget, error) {
 	byKey := map[string]*LeaseTarget{}
 	order := []string{}
 	for rows.Next() {
-		var cid, tt, team, tok string
-		if err := rows.Scan(&cid, &tt, &team, &tok); err != nil {
+		var cid, tt, team, tok, base string
+		if err := rows.Scan(&cid, &tt, &team, &tok, &base); err != nil {
 			return nil, err
 		}
 		key := tt + "|" + team
@@ -332,7 +345,7 @@ func (s *Store) LeaseTargets() ([]LeaseTarget, error) {
 		}
 		lt, ok := byKey[key]
 		if !ok {
-			lt = &LeaseTarget{TargetType: tt, TeamID: team, ConversationID: cid}
+			lt = &LeaseTarget{TargetType: tt, TeamID: team, ConversationID: cid, BaseURL: base}
 			byKey[key] = lt
 			order = append(order, key)
 		}

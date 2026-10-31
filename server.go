@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-const Version = "1.0.0"
+const Version = "1.01"
 
 //go:embed frontend
 var frontendFS embed.FS
@@ -274,6 +274,11 @@ func (s *Server) rebind(binds []string) (map[string]string, error) {
 // listenOne 打开一个监听器并起 Serve。
 // 语义：0.0.0.0 → 仅 IPv4（tcp4）；:: → 仅 IPv6（tcp6）；域名 → 先解析，绑到解析出的 IP。
 func (s *Server) listenOne(bind string) (boundListener, error) {
+	return s.listenOnePort(bind, s.port)
+}
+
+// listenOnePort 在指定端口上打开监听（RebindAll 换端口时用）。
+func (s *Server) listenOnePort(bind string, port int) (boundListener, error) {
 	host := bind
 	network := "tcp"
 	if ip := net.ParseIP(bind); ip != nil {
@@ -299,7 +304,7 @@ func (s *Server) listenOne(bind string) (boundListener, error) {
 		}
 		log.Printf("域名 %s 解析为 %s", bind, host)
 	}
-	addr := net.JoinHostPort(host, strconv.Itoa(s.port))
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	ln, err := net.Listen(network, addr)
 	if err != nil {
 		return boundListener{}, err
@@ -313,6 +318,44 @@ func (s *Server) listenOne(bind string) (boundListener, error) {
 	}(srv, ln)
 	log.Printf("监听成功: %s（%s）", bind, ln.Addr().String())
 	return boundListener{addr: bind, ln: ln, srv: srv}, nil
+}
+
+// RebindAll 同时换监听地址与端口：端口不变走 rebind；
+// 端口变了则「先在新端口把全部地址开起来，全部成功才关旧端口」，任一失败关掉新开的、旧监听原样保留。
+func (s *Server) RebindAll(binds []string, port int) (map[string]string, error) {
+	if port <= 0 || port == s.port {
+		return s.rebind(binds)
+	}
+	binds = normalizeBinds(binds)
+	if len(binds) == 0 {
+		binds = []string{defaultBind}
+	}
+	added := make([]boundListener, 0, len(binds))
+	failures := map[string]string{}
+	for _, b := range binds {
+		bl, err := s.listenOnePort(b, port)
+		if err != nil {
+			failures[b] = err.Error()
+			log.Printf("监听 %s:%d 失败: %v", b, port, err)
+			continue
+		}
+		added = append(added, bl)
+	}
+	if len(failures) > 0 {
+		for _, bl := range added {
+			bl.close()
+		}
+		return failures, fmt.Errorf("新端口 %d 有 %d 个地址监听失败，已保持原端口 %d 不变", port, len(failures), s.port)
+	}
+	old := s.bounds
+	oldPort := s.port
+	s.port = port
+	s.applyBounds(added)
+	for _, bl := range old {
+		bl.close()
+	}
+	log.Printf("端口已切换: %d → %d（监听 %s）", oldPort, port, strings.Join(s.listening, "、"))
+	return nil, nil
 }
 
 func (s *Server) applyBounds(bounds []boundListener) {
@@ -994,25 +1037,25 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		autostart = s.AutostartStatus()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version":            Version,
-		"api_base":           s.BaseURL(),
-		"db_path":            s.dbPath,
-		"autostart":          autostart,
-		"port":               s.Port(),
-		"bind":               s.BindConfig(),
-		"listening":          s.Listening(),
-		"lan_open":           HasNonLoopback(s.Listening()),
-		"default_bind":       defaultBind,
-		"poll_interval_sec":  loadPollInterval(),
-		"aionui_helper_path": loadAppSettings().HelperPath,
-		"aionui_base_url":    loadAppSettings().BaseURL,
-		"skip_interval_sec":  loadAppSettings().SkipInterval,
+		"version":           Version,
+		"api_base":          s.BaseURL(),
+		"db_path":           s.dbPath,
+		"autostart":         autostart,
+		"port":              s.Port(),
+		"bind":              s.BindConfig(),
+		"listening":         s.Listening(),
+		"lan_open":          HasNonLoopback(s.Listening()),
+		"default_bind":      defaultBind,
+		"poll_interval_sec": loadPollInterval(),
+		"aionui_base_url":   loadAppSettings().BaseURL,
+		"skip_interval_sec": loadAppSettings().SkipInterval,
 	})
 }
 
 func (s *Server) handleBindPut(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Binds []string `json:"binds"`
+		Port  *int     `json:"port"`
 	}
 	if !decodeBody(w, r, &in) {
 		return
@@ -1021,10 +1064,21 @@ func (s *Server) handleBindPut(w http.ResponseWriter, r *http.Request) {
 	if len(binds) == 0 {
 		binds = []string{defaultBind}
 	}
-	failures, err := s.Rebind(binds)
+	port := s.Port()
+	if in.Port != nil {
+		if *in.Port < 1 || *in.Port > 65535 {
+			writeErr(w, ErrBadBody)
+			return
+		}
+		port = *in.Port
+	}
+	failures, err := s.RebindAll(binds, port)
 	if err == nil {
 		if saveErr := saveBinds(s.BindConfig()); saveErr != nil {
 			log.Printf("保存 listen.json 失败: %v", saveErr)
+		}
+		if saveErr := savePort(s.Port()); saveErr != nil {
+			log.Printf("保存 settings.json 端口失败: %v", saveErr)
 		}
 	}
 	resp := map[string]any{

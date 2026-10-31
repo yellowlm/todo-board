@@ -22,6 +22,7 @@ type schemaStep struct {
 
 var schemaSteps = []schemaStep{
 	{version: 1, note: "新增 monitor_*", apply: migrateV1MonitorTables},
+	{version: 2, note: "monitor_tokens 增加 base_url", apply: migrateV2MonitorBaseURL},
 }
 
 // migrateSchema 从当前 user_version 连续升级到最新。
@@ -85,4 +86,10 @@ CREATE TABLE IF NOT EXISTS monitor_pending (
 CREATE INDEX IF NOT EXISTS idx_monitor_pending_sub ON monitor_pending(sub_id, id);
 `)
 	return err
+}
+
+// migrateV2MonitorBaseURL v1 → v2：monitor_tokens 增加 base_url（Pager 注册时上报的宿主地址）。
+// 只动 v1 新建的 monitor_tokens，不碰 sections / tasks。
+func migrateV2MonitorBaseURL(db *sql.DB) error {
+	return ensureColumn(db, "monitor_tokens", "base_url", "TEXT NOT NULL DEFAULT ''")
 }

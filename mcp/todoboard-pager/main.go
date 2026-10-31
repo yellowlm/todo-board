@@ -24,10 +24,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -104,7 +106,35 @@ func main() {
 	}
 
 	dbg("启动：target=%s team=%s slot=%s board=%s", targetKind, targetTeam, targetSlot, boardBase)
+	setupShutdownCleanup()
 	serve(os.Stdin, os.Stdout)
+	shutdownUnregister() // stdin EOF / 正常结束：注销自己注册的那条
+}
+
+// shutdownUnregister 正常退出时注销本进程注册的那条（只删自己的 subID）。
+// 失败只记日志，不阻塞退出、不改退出码；被强杀时不会走到这里。
+func shutdownUnregister() {
+	st := currentMonitor()
+	if st.subID == 0 || st.key == "" {
+		return
+	}
+	unregisterMonitor(st.subID, st.key)
+	dbg("已注销盯盘注册 #%d（退出清理）", st.subID)
+}
+
+// setupShutdownCleanup 监听 SIGINT / SIGTERM：收到就先注销再退出。
+func setupShutdownCleanup() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ch
+		dbg("收到退出信号，开始清理")
+		shutdownUnregister()
+		if logCloser != nil {
+			_ = logCloser.Close()
+		}
+		os.Exit(0)
+	}()
 }
 
 // missingEnv 返回缺失的环境变量名（空切片表示齐全）。
@@ -140,19 +170,38 @@ func ensureMessaging() error {
 
 /* ---------------- 日志（默认关闭） ---------------- */
 
+// logFileName 与数据库同名风格：<FQDN>.pager.log（本机即 work0.yellowlm.net.pager.log）。
+func logFileName() string { return sanitizeFileName(computerFQDN()) + ".pager.log" }
+
+// resolveLogPath 解析 TODOBOARD_DEBUGE：
+//   - 空 → 返回 ""（不写日志，开关语义不变）
+//   - 完整文件路径（带目录且以 .log 结尾）→ 原样使用
+//   - 目录 / 以分隔符结尾 / 只有文件名 → 该目录（或 exe 同目录）下的 <FQDN>.pager.log
+func resolveLogPath(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if fi, err := os.Stat(raw); err == nil && fi.IsDir() {
+		return filepath.Join(raw, logFileName())
+	}
+	if strings.HasSuffix(raw, "/") || strings.HasSuffix(raw, string(os.PathSeparator)) {
+		return filepath.Join(raw, logFileName())
+	}
+	dir, base := filepath.Dir(raw), filepath.Base(raw)
+	if dir != "" && dir != "." && strings.HasSuffix(strings.ToLower(base), ".log") {
+		return raw // 完整文件路径：照用，不改名
+	}
+	return filepath.Join(exeDirPath(), logFileName())
+}
+
 func setupLogging() {
 	logger = log.New(io.Discard, "", 0)
-	path := strings.TrimSpace(os.Getenv("TODOBOARD_DEBUGE"))
+	path := resolveLogPath(os.Getenv("TODOBOARD_DEBUGE"))
 	if path == "" {
 		return
 	}
-	// 值可能是文件或目录：已存在的目录 → 里面建固定文件名
-	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
-		path = filepath.Join(path, "todoboard-pager.log")
-	} else if strings.HasSuffix(path, string(os.PathSeparator)) || strings.HasSuffix(path, "/") {
-		_ = os.MkdirAll(path, 0o755)
-		path = filepath.Join(path, "todoboard-pager.log")
-	} else if dir := filepath.Dir(path); dir != "" && dir != "." {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		_ = os.MkdirAll(dir, 0o755)
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
@@ -161,6 +210,7 @@ func setupLogging() {
 	}
 	logCloser = f
 	logger = log.New(f, "", log.LstdFlags)
+	dbg("日志文件: %s", path)
 }
 
 func dbg(format string, args ...any) { logger.Printf(format, args...) }
@@ -289,7 +339,8 @@ func registerMonitor(sectionID int64, key string, interval int) (int64, error) {
 		"conversation_id": envConvID,
 		"interval_sec":    interval,
 		"token":           envToken,
-		"user_id":         envUserID, // 查团队/会话友好名要用
+		"user_id":         envUserID,  // 查团队/会话友好名要用
+		"base_url":        envBaseURL, // 该连接的宿主地址，主程序推送/取名/续租都用它
 	}
 	code, raw, err := monitorEndpoint(http.MethodPost, "/api/monitors", key, body)
 	if err != nil {
@@ -321,7 +372,7 @@ func targetTypeForRegister() string {
 
 // heartbeatMonitor 回报存活；status 为 HTTP 状态码（404 = 盯盘已被清除）。
 func heartbeatMonitor(sectionID int64, key string) (int, error) {
-	body := map[string]any{"section_id": sectionID, "conversation_id": envConvID, "token": envToken}
+	body := map[string]any{"section_id": sectionID, "conversation_id": envConvID, "token": envToken, "base_url": envBaseURL, "user_id": envUserID}
 	code, _, err := monitorEndpoint(http.MethodPut, "/api/monitors/heartbeat", key, body)
 	if err != nil {
 		return 0, err

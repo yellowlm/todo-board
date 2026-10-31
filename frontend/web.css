@@ -167,7 +167,7 @@ svg.i.sm { width: 14px; height: 14px; }
 .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border-strong); flex: none; }
 .dot.doing { border-color: var(--doing); background: var(--doing-soft); }
 .dot.done { border-color: var(--success); background: var(--success); }
-.task-title { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-title { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 .task.done .task-title { color: var(--text-3); text-decoration: line-through; }
 .task-date { font-size: 12px; color: var(--text-2); white-space: nowrap; }
 .task-date.overdue { color: var(--danger); }
@@ -324,3 +324,22 @@ svg.i.sm { width: 14px; height: 14px; }
 .mon-row { flex-wrap: nowrap; }
 .mon-name { min-width: 96px; }
 .mon-row .mon-meta { font-size: 11.5px; }
+
+/* 设置页卡片：一个 Section 一张卡，卡内多行（T145） */
+.sec-card { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+.sec-card-head { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; }
+.sec-card-head > div:first-child { flex: 1 1 auto; min-width: 0; }
+.sec-card-row { display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 0; min-width: 0; }
+.sec-card-label { flex: none; width: auto; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.sec-card-row .input { flex: 1 1 auto; min-width: 0; }
+.sec-card-foot { display: flex; justify-content: flex-end; gap: 8px; padding-top: 10px; }
+
+/* 设置页卡片外观（web 版没有 .secrow，需要自己上边框） */
+.sec-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 12px 14px; margin-bottom: 12px; }
+
+/* 分区头右侧计数组：#ID / 📋 N / 💡 N 统一字号行高、同基线、靠右 */
+.head-meta { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.head-meta > span { display: inline-flex; align-items: center; justify-content: center; height: 18px; line-height: 18px; font-size: 12px; }
+.head-meta > .section-id, .head-meta > .col-id { font-size: 12px; font-weight: 500; color: var(--text-3); }
+.head-meta > .section-count, .head-meta > .col-count { font-size: 12px; font-weight: 600; padding: 0 6px; border-radius: 9px; }
+.head-meta > .mon-badge { font-size: 12px; line-height: 18px; padding: 0 6px; }

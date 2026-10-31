@@ -5,10 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +17,7 @@ import (
 //   - 每 tick 只全量读一次看板（BoardSnapshot 一条 JOIN SQL），再分发给各区线程算 diff
 //   - 区内多个盯盘目标各自的 pending 队列独立，一个目标 401 不阻塞同区其它目标
 //   - 重启后按库里 baseline 继续算 diff，绝不重建基线（否则停机期间的变更会被吞）
-//   - 推送一律走 AionUI helper 子进程，token 只在子进程环境里出现，绝不落日志
+//   - 推送直连 AionUI 消息端点（HTTP POST），token 只出现在请求头里，绝不落日志
 
 const (
 	defaultMonitorInterval = 60
@@ -26,11 +25,13 @@ const (
 	maxMonitorInterval     = 3600
 
 	// 推送结果分类（写进 monitor_tokens.last_status）
-	statusPushOK            = 200
-	statusHelperNotConfiged = -1 // 未配置 helper 路径或文件不存在
-	statusHelperFailed      = -2 // helper 退出码非 0 且看不出鉴权码
-	statusHelperTimeout     = -3 // helper 超时
-	statusHelperBadOutput   = -4 // 输出无法判定（视为失败）
+	statusPushOK        = 200
+	statusNotConfigured = -1 // 连接配置不完整（保留位，当前未使用）
+	statusPushFailed    = -2 // 请求失败（网络/非预期错误）
+	statusPushTimeout   = -3 // 请求超时
+	statusBadPayload    = -4 // 请求体构造失败
+	statusNoBaseURL     = -5 // 连接没有上报 AionUI 地址，无法推送
+	statusNoCreds       = -6 // 连接没有 token / user_id，无法推送
 )
 
 type sectionJob struct {
@@ -215,8 +216,9 @@ func (k *monitorKernel) processSub(sec Section, tasks []Task, sub MonitorSub) {
 	}
 
 	cfg := loadAppSettings()
+	token, baseURL := k.store.MonitorTokenInfo(sub.ConversationID)
 	msg := buildMergedNotice(sec, pending)
-	status := pushNotice(cfg, sub, k.store.MonitorToken(sub.ConversationID), msg)
+	status := pushNotice(cfg, sub, token, baseURL, msg)
 	now := time.Now()
 	if err := k.store.SetMonitorTokenStatus(sub.ConversationID, status, now.Format(stampFmt)); err != nil {
 		log.Printf("盯盘：写推送状态失败（分区 #%d）: %v", sub.SectionID, err)
@@ -225,7 +227,7 @@ func (k *monitorKernel) processSub(sec Section, tasks []Task, sub MonitorSub) {
 	for _, p := range pending {
 		ids = append(ids, p.ID)
 	}
-	if status == statusPushOK {
+	if status >= 200 && status < 300 {
 		if err := k.store.ClearMonitorPending(ids); err != nil {
 			log.Printf("盯盘：清理 pending 失败（分区 #%d）: %v", sub.SectionID, err)
 			return
@@ -291,63 +293,59 @@ func buildMergedNotice(sec Section, pending []MonitorPending) string {
 	return msg
 }
 
-// pushNotice 调 AionUI helper 子进程发一条消息。返回状态码（见 status* 常量）。
-func pushNotice(cfg appSettings, sub MonitorSub, token, msg string) int {
-	helper := strings.TrimSpace(cfg.HelperPath)
-	if helper == "" {
-		return statusHelperNotConfiged
+// pushNotice 直连 AionUI 的消息端点发一条通知。
+// 团队：POST {base}/api/teams/{team}/agents/{slot}/messages
+// 单聊：POST {base}/api/conversations/{conv}/messages
+// 2xx 即成功（200 / 202 都算）；401/403/404 原样写回 last_status。
+func pushNotice(cfg appSettings, sub MonitorSub, token, baseURL, msg string) int {
+	// 宿主地址只认该连接注册/心跳时上报的 base_url；没有就跳过（设置页不再提供默认地址）
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return statusNoBaseURL
 	}
-	if st, err := os.Stat(helper); err != nil || st.IsDir() {
-		return statusHelperNotConfiged
+	if strings.TrimSpace(token) == "" {
+		return statusNoCreds
+	}
+	userID := loadAionUserID(sub.ConversationID)
+	if userID == "" {
+		return statusNoCreds
 	}
 
-	// helper 的 send-message 不接旗标，正文与目标都走 stdin 的 JSON：{to, message}
-	// 团队用 slot_id 作 to（团队本身由 helper 从 AIONUI_* 环境推导），单聊用会话 id。
-	group := "team"
-	payload := map[string]string{"to": sub.SlotID, "message": msg}
-	if sub.TargetType != "team" {
-		group = "session"
-		payload = map[string]string{"to": sub.ConversationID, "message": msg}
+	var url string
+	if sub.TargetType == "team" {
+		url = fmt.Sprintf("%s/api/teams/%s/agents/%s/messages", base, sub.TeamID, sub.SlotID)
+	} else {
+		url = fmt.Sprintf("%s/api/conversations/%s/messages", base, sub.ConversationID)
 	}
-	raw, err := json.Marshal(payload)
+	payload, err := json.Marshal(map[string]string{"content": msg})
 	if err != nil {
-		return statusHelperBadOutput
+		return statusBadPayload
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, helper, group, "send-message")
-	cmd.Stdin = bytes.NewReader(raw)
-	env := os.Environ()
-	if token != "" {
-		env = append(env, "AIONUI_RUNTIME_TOKEN="+token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return statusPushFailed
 	}
-	if cfg.BaseURL != "" {
-		env = append(env, "AIONUI_BASE_URL="+cfg.BaseURL)
-	}
-	cmd.Env = env
-	var out strings.Builder
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-aionui-runtime-token", token)
+	req.Header.Set("x-aionui-user-id", userID)
+	req.Header.Set("x-aionui-conversation-id", sub.ConversationID)
 
-	err = cmd.Run()
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if ctx.Err() == context.DeadlineExceeded {
-		return statusHelperTimeout
+		return statusPushTimeout
 	}
 	if err != nil {
-		// 只把输出当作「分类线索」，日志里也只记状态码，不打印输出（可能带 token 回显）
-		text := out.String()
-		switch {
-		case strings.Contains(text, "401"):
-			return http.StatusUnauthorized
-		case strings.Contains(text, "403"):
-			return http.StatusForbidden
-		case strings.Contains(text, "404"):
-			return http.StatusNotFound
-		}
-		return statusHelperFailed
+		return statusPushFailed
 	}
-	return statusPushOK
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return resp.StatusCode
+	}
+	return resp.StatusCode
 }
 
 /* ---------------- 团队/会话保活 ---------------- */
@@ -373,21 +371,21 @@ func (k *monitorKernel) leaseLoop() {
 }
 
 func (k *monitorKernel) leaseOnce() {
-	cfg := loadAppSettings()
-	if cfg.BaseURL == "" {
-		return // 没配宿主地址就不续租
-	}
 	targets, err := k.store.LeaseTargets()
 	if err != nil {
 		return
 	}
 	client := &http.Client{Timeout: 8 * time.Second}
 	for _, t := range targets {
+		base := strings.TrimRight(strings.TrimSpace(t.BaseURL), "/")
+		if base == "" {
+			continue // 该连接没上报地址：跳过（不再回退设置页）
+		}
 		var url string
 		if t.TargetType == "team" && t.TeamID != "" {
-			url = fmt.Sprintf("%s/api/teams/%s/active-lease", cfg.BaseURL, t.TeamID)
+			url = fmt.Sprintf("%s/api/teams/%s/active-lease", base, t.TeamID)
 		} else {
-			url = fmt.Sprintf("%s/api/conversations/%s/active-lease", cfg.BaseURL, t.ConversationID)
+			url = fmt.Sprintf("%s/api/conversations/%s/active-lease", base, t.ConversationID)
 		}
 		if len(t.Tokens) == 0 {
 			continue

@@ -351,9 +351,8 @@ function sectionHtml(section, index, now) {
   return `<div class="section${collapsed ? ' collapsed' : ''}" style="${secStyle(index)}" data-sid="${section.id}">
     <div class="section-head" draggable="true">
       <svg class="i sm chev"><use href="#i-chev"/></svg>
-      <span class="section-name">${esc(section.name)}</span><span class="section-id">#${section.id}</span>
-      <span class="section-count">📋 ${shown.length}</span>
-      <span class="mon-badge" title="Pager 连接数">💡 ${Number(section.monitor_count || 0)}</span>
+      <span class="section-name">${esc(section.name)}</span>
+      <span class="head-meta"><span class="section-id">#${section.id}</span><span class="section-count">📋 ${shown.length}</span><span class="mon-badge" title="Pager 连接数">💡 ${Number(section.monitor_count || 0)}</span></span>
       <!-- 完成进度条暂时隐藏，勿删（DOM 与 CSS 都保留）：
       <div class="secprog"><div class="sp-bar"><div class="sp-fill" style="width:${pct}%"></div></div></div>
       -->
@@ -630,6 +629,12 @@ async function afterMonitorChange() {
   loadMonitorPanels();
 }
 
+// bindURL 把监听地址拼成可访问 URL（IPv6 加方括号）
+function bindURL(bind, port) {
+  const host = String(bind || '').includes(':') ? `[${bind}]` : String(bind || '');
+  return `http://${host}:${port}`;
+}
+
 /* ---------------- 设置 ---------------- */
 function renderSettings() {
   const s = state.settings;
@@ -649,16 +654,27 @@ function renderSettings() {
         ${lanOpen ? '<div class="warn-note">⚠️ 已对局域网开放：网页端没有鉴权，同网段任何人都能读写。</div>' : ''}
         <label class="bind-local"><input type="checkbox" id="bindLocal" ${binds.length === 1 && binds[0] === '127.0.0.1' ? 'checked' : ''}> 仅本机（127.0.0.1）</label>
         <div class="bind-list">
-          ${binds.map((b, i) => `<div class="bind-row"><span class="key">${esc(b)}</span>${listening.indexOf(b) >= 0 ? '<span class="bind-ok">已生效</span>' : '<span class="bind-bad">未生效</span>'}<button class="rowbtn danger" data-act="bind-del" data-i="${i}" title="移除">✕</button></div>`).join('') || '<div class="secrow-key">（尚未添加任何地址）</div>'}
+          ${binds.map((b, i) => {
+            const on = listening.indexOf(b) >= 0;
+            const url = bindURL(b, port);
+            return `<div class="bind-row"><span class="key">${esc(b)}</span>${on
+              ? `<span class="bind-ok">已生效</span><span class="bind-url">${esc(url)}</span><button class="rowbtn" data-act="copy-url" data-url="${esc(url)}" title="复制完整地址">📋 复制</button>`
+              : '<span class="bind-bad">未生效</span>'}<button class="rowbtn danger" data-act="bind-del" data-i="${i}" title="移除">✕</button></div>`;
+          }).join('') || '<div class="secrow-key">（尚未添加任何地址）</div>'}
         </div>
         <div class="bind-add">
           <input class="input" id="bindInput" placeholder="如 0.0.0.0、::、::1、192.168.1.5、host.example.com">
           <button class="rowbtn" data-act="bind-add">➕ 添加</button>
         </div>
         <div class="secrow-key">说明：<code>::</code> 只绑 IPv6，<code>0.0.0.0</code> 只绑 IPv4；<b>要双栈就把两条都加上</b>。<code>::1</code> 仅 IPv6 环回；填域名则按解析出的地址绑定。</div>
-        <div class="secrow-key">当前生效：${esc(listening.join('、') || '（无）')} · 端口 ${port}</div>
       </div>
-      <div class="bark-actions"><button class="rowbtn" data-act="bind-save">💾 保存并生效</button></div>
+      <div class="bind-port">
+        <div class="sec-card-label">端口</div>
+        <div class="bind-port-row">
+          <input class="input" id="bindPort" type="number" min="1" max="65535" value="${port}">
+          <button class="rowbtn" data-act="bind-save">💾 保存并生效</button>
+        </div>
+      </div>
     </div>
     <div class="secrow">
       <div>
@@ -670,22 +686,21 @@ function renderSettings() {
         <button class="rowbtn" data-act="poll-save">💾 保存</button>
       </div>
     </div>
-    <div class="secrow">
-      <div>
-        <div class="secrow-name">💡 Pager 推送（AIONUI HELPER）</div>
+    <div class="secrow sec-card">
+      <div class="sec-card-head">
+        <div>
+          <div class="secrow-name">🔧 AionUI 推送设置</div>
+          <div class="secrow-key">Pager 推送由主程序直连 AionUI 消息接口发送；连接由 Pager 注册时上报。</div>
+        </div>
       </div>
-      <div class="actions">
-        <input class="input" id="aionHelperPath" placeholder="helper 可执行文件完整路径" value="${esc(s.aionui_helper_path || '')}" style="width:280px">
+
+      <div class="sec-card-row">
+        <span class="sec-card-label">跳过重试间隔（秒）</span>
+        <input class="input" id="aionSkipInput" type="number" min="5" max="3600" style="max-width:120px" value="${(s && s.skip_interval_sec) || 60}">
+      </div>
+
+      <div class="sec-card-foot">
         <button class="rowbtn" data-act="aion-save">💾 保存</button>
-      </div>
-    </div>
-    <div class="secrow">
-      <div>
-        <div class="secrow-name">⏱ 跳过重试间隔</div>
-        <div class="secrow-key">推送失败后按此间隔静默重试（5–3600 秒，默认 60），不设最大次数</div>
-      </div>
-      <div class="actions">
-        <input class="input" id="aionSkipInput" type="number" min="5" max="3600" style="width:96px" value="${(s && s.skip_interval_sec) || 60}">
       </div>
     </div>
     <div class="secrow">
@@ -697,37 +712,32 @@ function renderSettings() {
         <button class="switch${s.autostart ? ' on' : ''}" data-act="autostart" role="switch" aria-checked="${s.autostart}"></button>
       </div>
     </div>
-    <div class="secrow">
-      <div>
-        <div class="secrow-name">🔔 任务完成推送（Bark）</div>
-        <div class="secrow-key">任务标记完成时推送到手机；失败不影响任务状态</div>
-      </div>
-      <div class="actions">
+    <div class="secrow sec-card">
+      <div class="sec-card-head">
+        <div>
+          <div class="secrow-name">🔔 Bark 推送</div>
+          <div class="secrow-key">任务标记完成时推送到手机；失败不影响任务状态</div>
+        </div>
         <button class="switch${state.bark && state.bark.enabled ? ' on' : ''}" data-act="bark-enabled" role="switch" aria-checked="${state.bark && state.bark.enabled}"></button>
       </div>
-    </div>
-    <div class="secrow bark-card">
-      <div class="bark-fields">
-        <div class="field"><label>服务器地址</label>
-          <input class="input" id="barkServer" placeholder="https://bark.example.com" value="${esc((state.bark && state.bark.server) || '')}"></div>
-        <div class="field"><label>设备 Key</label>
-          <input class="input" id="barkKey" type="password" placeholder="${state.bark && state.bark.key_set ? '已保存 ' + esc(state.bark.key_masked) + '，留空则不修改' : '粘贴设备 Key'}">
-        </div>
-        <div class="field"><label>图标 URL（可留空）</label>
-          <input class="input" id="barkIcon" value="${esc((state.bark && state.bark.icon) || '')}" placeholder="留空则不带图标"></div>
+      <div class="sec-card-row">
+        <span class="sec-card-label">服务器地址</span>
+        <input class="input" id="barkServer" placeholder="https://bark.example.com" value="${esc((state.bark && state.bark.server) || '')}">
       </div>
-      <div class="bark-actions">
-        <button class="rowbtn" data-act="bark-save">💾 保存</button>
+      <div class="sec-card-row">
+        <span class="sec-card-label">设备 Key</span>
+        <input class="input" id="barkKey" type="password" placeholder="${state.bark && state.bark.key_set ? '已保存 ' + esc(state.bark.key_masked) + '，留空则不修改' : '粘贴设备 Key'}">
+      </div>
+      <div class="sec-card-row">
+        <span class="sec-card-label">图标 URL（可留空）</span>
+        <input class="input" id="barkIcon" value="${esc((state.bark && state.bark.icon) || '')}" placeholder="留空则不带图标">
+      </div>
+      <div class="sec-card-foot">
         <button class="rowbtn" data-act="bark-test">📨 测试推送</button>
+        <button class="rowbtn" data-act="bark-save">💾 保存</button>
       </div>
     </div>
-    <div class="secrow">
-      <div>
-        <div class="secrow-name">🔌 接口地址</div>
-        <div class="secrow-key"><span class="key">${esc(s.api_base)}</span></div>
-      </div>
-      <div class="actions"><button class="rowbtn" data-act="copy">📋 复制</button></div>
-    </div>
+
     <div class="secrow">
       <div>
         <div class="secrow-name">📦 版本</div>
@@ -1226,16 +1236,14 @@ function bindEvents() {
     const btn = e.target.closest('[data-act]');
     if (!btn || !state.settings) return;
     if (btn.dataset.act === 'aion-save') {
-      const helper = (($('#aionHelperPath') || {}).value || '').trim();
       const skip = Number((($('#aionSkipInput') || {}).value) || 0);
       try {
         const res = await api('PUT', '/api/settings/aion', {
-          aionui_helper_path: helper,
           skip_interval_sec: skip,
         });
         state.settings = await api('GET', '/api/settings');
         render();
-        toast(`已保存：${res.aionui_helper_path ? 'helper 已配置' : '未配置 helper（推送会跳过）'}，重试间隔 ${res.skip_interval_sec} 秒`);
+        toast(`已保存：重试间隔 ${res.skip_interval_sec} 秒`);
       } catch (err) {
         toast(err.message, true);
       }
@@ -1290,17 +1298,33 @@ function bindEvents() {
       render();
     } else if (btn.dataset.act === 'bind-save') {
       try {
-        const res = await api('PUT', '/api/settings/bind', { binds: state.bindDraft || [] });
+        const portInput = $('#bindPort');
+        const portVal = portInput ? Number(portInput.value || 0) : 0;
+        const body = { binds: state.bindDraft || [] };
+        if (portVal >= 1 && portVal <= 65535) body.port = portVal;
+        const oldPort = state.settings ? state.settings.port : 0;
+        const res = await api('PUT', '/api/settings/bind', body);
         const fails = res.failures || {};
         const failText = Object.keys(fails).map((k) => `${k}：${fails[k]}`).join('；');
         if (res.ok) {
-          toast(failText ? '部分地址失败：' + failText : '监听地址已更新并生效', !!failText);
+          const newPort = res.port || oldPort;
+          const newURL = bindURL((res.listening && res.listening[0]) || '127.0.0.1', newPort);
+          if (newPort && newPort !== oldPort) {
+            toast(`端口已改为 ${newPort}，请改用 ${newURL} 访问（本页将失效）`);
+          } else {
+            toast(failText ? '部分地址失败：' + failText : '监听地址已更新并生效', !!failText);
+          }
         } else {
           toast('保存失败，' + (res.error || '未知原因') + (failText ? '：' + failText : ''), true);
         }
-        state.settings = await api('GET', '/api/settings');
-        state.bindDraft = (state.settings.bind || ['127.0.0.1']).slice();
-        render();
+        // 端口切换后旧地址立即失效：刷新失败属正常，别覆盖上面的成功提示
+        try {
+          state.settings = await api('GET', '/api/settings');
+          state.bindDraft = (state.settings.bind || ['127.0.0.1']).slice();
+          render();
+        } catch (e) {
+          /* 旧端口已关闭，忽略 */
+        }
       } catch (err) {
         toast(err.message, true);
       }
@@ -1325,10 +1349,10 @@ function bindEvents() {
       } catch (err) {
         toast(err.message, true);
       }
-    } else if (btn.dataset.act === 'copy') {
+    } else if (btn.dataset.act === 'copy-url') {
       try {
-        await navigator.clipboard.writeText(state.settings.api_base);
-        toast('已复制接口地址');
+        await navigator.clipboard.writeText(btn.dataset.url || '');
+        toast('已复制：' + (btn.dataset.url || ''));
       } catch (err) {
         toast('复制失败，请手动选择', true);
       }

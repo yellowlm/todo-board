@@ -65,8 +65,7 @@ function columnsFor(width) {
   if (width < 768) return 1;
   if (width < 1000) return 2;
   if (width < 1200) return 3;
-  if (width < 1500) return 4;
-  return 5;
+  return 4; // 上限固定 4 列（宽屏不再出 5 列）
 }
 
 /* ---------------- Markdown ---------------- */
@@ -286,9 +285,8 @@ function colHtml(sec, index) {
     <div class="col-head">
       <div class="col-row1">
         <svg class="i sm chev" data-act="collapse"><use href="#i-chev"/></svg>
-        <span class="col-name">${esc(sec.name)}</span><span class="col-id">#${sec.id}</span>
-        <span class="col-count">📋 ${sec.total}</span>
-        <span class="mon-badge" title="Pager 连接数">💡 ${Number(sec.monitor_count || 0)}</span>
+        <span class="col-name">${esc(sec.name)}</span>
+        <span class="head-meta"><span class="col-id">#${sec.id}</span><span class="col-count">📋 ${sec.total}</span><span class="mon-badge" title="Pager 连接数">💡 ${Number(sec.monitor_count || 0)}</span></span>
         <!-- 完成进度条暂时隐藏，勿删（DOM 与 CSS 都保留）：
         <div class="sp-bar"><div class="sp-fill" style="width:${pct}%"></div></div>
         -->
@@ -632,15 +630,13 @@ function bind() {
 
   // 盯盘推送设置保存
   $('#aionSave').addEventListener('click', async () => {
-    const helper = String(($('#aionHelperPath') || {}).value || '').trim();
     const skip = Number(($('#aionSkipSec') || {}).value || 0);
     try {
       const res = await api('PUT', '/api/settings/aion', {
-        aionui_helper_path: helper,
         skip_interval_sec: skip,
       });
       state.settings = await api('GET', '/api/settings');
-      toast(`已保存：${res.aionui_helper_path ? 'helper 已配置' : '未配置 helper（推送会跳过）'}，重试间隔 ${res.skip_interval_sec} 秒`);
+      toast(`已保存：重试间隔 ${res.skip_interval_sec} 秒`);
     } catch (e) {
       toast(e.message, true);
     }
@@ -887,7 +883,6 @@ async function openSettings() {
     state.settings = settings;
     fillBark();
     $('#pollSec').value = settings.poll_interval_sec || 5;
-    $('#aionHelperPath').value = settings.aionui_helper_path || '';
     $('#aionSkipSec').value = settings.skip_interval_sec || 60;
     $('#versionInfo').textContent = `版本 ${settings.version} · 数据文件 ${settings.db_path}`;
   } catch (e) {

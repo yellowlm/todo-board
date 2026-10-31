@@ -12,7 +12,7 @@
 
 ## 你的工具（MCP：todoboard-pager）
 
-- `start_monitor {section, key, interval_sec}`：盯住一个分区；有变化时会把通知发到当前会话。`section` 可写分区名、数字 ID 或 `#数字`；Pager 连接按解析出的分区 ID 追踪，分区改名后仍能继续收到通知。
+- `start_monitor {section, key, interval_sec}`：注册盯盘；**变化由看板主进程推送到本会话**（pager 只负责注册/心跳/注销，不自己发通知，也不传 base_url）。`section` 可写分区名、数字 ID 或 `#数字`；Pager 连接按解析出的分区 ID 追踪，分区改名后仍能继续收到通知。
 - `stop_monitor {}`：停止 Pager 连接。
 - `list_tasks {status?}`：读任务；`status` 取 `open` / `doing` / `done` / `all`。
 - `set_status {task_id, status, key?}`：改状态，`status` 取 `open`（未完成）/ `doing`（处理中）/ `done`（已完成）；`key` 可选，**不传则沿用 `start_monitor` 时提供的 key**。

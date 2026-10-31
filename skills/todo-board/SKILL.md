@@ -156,21 +156,27 @@ Errors are `{"error": "<message>"}` with a Chinese message:
 
 ## MCP vs. the in-app watcher
 
-The bundled `todoboard-pager` MCP tool no longer delivers the notifications itself when a
-current build of the board is running: it registers the watch through `POST /api/monitors`,
-reports `PUT /api/monitors/heartbeat` on every poll, and unregisters with
-`DELETE /api/monitors/{id}/self` (section key required) on `stop_monitor`. Listing and deleting
-watches from the built-in UI is a separate management surface that takes no key. Delivery (AIONUI HELPER subprocess) is owned by
-the board process, so the same change is never announced twice. If a heartbeat returns **404**
-the watch was cleared from another client: the pager stops polling immediately and never
-re-registers on its own. Restart the monitor from the agent side if you still need it.
+The bundled `todoboard-pager` MCP tool only **registers / heartbeats / unregisters**:
+`POST /api/monitors` (with its own `AIONUI_BASE_URL` and user id), `PUT /api/monitors/heartbeat`
+on every poll (re-reporting `base_url` so a restarted AionUI on a new port is picked up), and
+`DELETE /api/monitors/{id}/self` (section key required) on `stop_monitor`. **Delivery and team
+keep-alive are owned by the board process** (direct HTTP to the AionUI message endpoints), so the same change is
+never announced twice; the pager no longer reads the aioncore TOML/key files (`configfile.go`
+keeps a generic commented read/write pair). Listing and deleting watches from the built-in UI is
+a separate management surface that takes no key. If a heartbeat returns **404** the watch was
+cleared from another client: the pager stops polling immediately and never re-registers on its
+own. Restart the monitor from the agent side if you still need it.
+
+Pager log file: `<FQDN>.pager.log` (e.g. `work0.yellowlm.net.pager.log`). `TODOBOARD_DEBUGE`
+keeps its meaning: a full file path is used as-is, a directory or bare name gets the FQDN name,
+and when it is unset nothing is written.
 
 ## MCP: todoboard-pager
 
 A companion MCP server (`Dev\build\todoboard-pager.exe`, source in `mcp/todoboard-pager/`) that registers
 one section as a watch inside an AionUI session. It only **registers / heartbeats / unregisters**
 (`POST /api/monitors`, `PUT /api/monitors/heartbeat`, `DELETE /api/monitors/{id}/self`) and reads/writes
-tasks; **delivery and team keep-alive belong to the board process**, which sends through the AIONUI HELPER
+tasks; **delivery and team keep-alive belong to the board process**, which posts directly to the AionUI message endpoints
 subprocess. The pager no longer sends notices itself, no longer renews leases, and no longer reads the
 aioncore TOML/key files (`configfile.go` keeps a generic commented read/write pair for future reuse).
 
@@ -187,7 +193,7 @@ so it keeps notifying after the section is renamed.
 
 | Tool | Arguments | Notes |
 | --- | --- | --- |
-| `start_monitor` | `{section, key, interval_sec}` | non-blocking; sends `[通知]` on changes |
+| `start_monitor` | `{section, key, interval_sec}` | non-blocking; registers the watch. `base_url` is reported automatically by the pager from `AIONUI_BASE_URL` on register **and every heartbeat** (callers never pass it); each watch keeps its own `interval_sec` (no global default). There is **no global default address** in settings: a watch without a reported base URL is skipped |
 | `stop_monitor` | `{}` | stops watching |
 | `list_tasks` | `{status?}` | `status` = `open` / `doing` / `done` / `all` |
 | `set_status` | `{task_id, status}` | `status` = `open` / `doing` / `done` |

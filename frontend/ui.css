@@ -254,7 +254,7 @@ svg.i.sm { width: 14px; height: 14px; }
 .section-head .chev { color: var(--text-3); transition: transform .15s; }
 .section.collapsed .section-head { border-bottom: 0; }
 .section.collapsed .section-head .chev { transform: rotate(-90deg); }
-.section-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.section-name { font-size: 14px; font-weight: 600; color: var(--text); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .section-count {
   font-size: 11px; font-weight: 600; color: var(--text-2); background: var(--hover);
   padding: 1px 8px; border-radius: 10px;
@@ -262,7 +262,7 @@ svg.i.sm { width: 14px; height: 14px; }
 .secprog { display: inline-flex; align-items: center; gap: 6px; }
 .sp-bar { width: 46px; height: 6px; border-radius: 3px; background: var(--hover); overflow: hidden; }
 .sp-fill { height: 100%; border-radius: 3px; background: var(--primary); }
-.section-head .grow { flex: 1; }
+.section-head .grow { display: none; }
 .section.collapsed .section-body { display: none; }
 /* 分区内滚动：条目多时分区正文自己滚，条少时不出现滚动条 */
 .section-body { overflow-y: auto; max-height: min(50vh, 420px); }
@@ -486,3 +486,26 @@ svg.i.sm { width: 14px; height: 14px; }
 .mon-row { flex-wrap: nowrap; }
 .mon-name { min-width: 96px; }
 .mon-row .mon-meta { font-size: 11.5px; }
+/* 监听地址：已生效条目展示完整 URL */
+.bind-url { font-family: Consolas, monospace; font-size: 12px; color: var(--text-2); margin-left: 8px; user-select: text; }
+
+/* 设置页卡片：一个 Section 一张卡，卡内多行（T145） */
+.sec-card { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+.sec-card-head { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; }
+.sec-card-head > div:first-child { flex: 1 1 auto; min-width: 0; }
+.sec-card-row { display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 0; min-width: 0; }
+.sec-card-label { flex: none; width: auto; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.sec-card-row .input { flex: 1 1 auto; min-width: 0; }
+.sec-card-foot { display: flex; justify-content: flex-end; gap: 8px; padding-top: 10px; }
+
+/* 监听地址里的端口行：标签一行、输入框占满下一行，按钮跟输入框同行 */
+.bind-port { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.bind-port-row { display: flex; gap: 8px; align-items: center; }
+.bind-port-row .input { flex: 1 1 auto; min-width: 0; }
+
+/* 分区头右侧计数组：#ID / 📋 N / 💡 N 统一字号行高、同基线、靠右 */
+.head-meta { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.head-meta > span { display: inline-flex; align-items: center; justify-content: center; height: 18px; line-height: 18px; font-size: 12px; }
+.head-meta > .section-id, .head-meta > .col-id { font-size: 12px; font-weight: 500; color: var(--text-3); }
+.head-meta > .section-count, .head-meta > .col-count { font-size: 12px; font-weight: 600; padding: 0 6px; border-radius: 9px; }
+.head-meta > .mon-badge { font-size: 12px; line-height: 18px; padding: 0 6px; }

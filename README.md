@@ -126,11 +126,12 @@
 **Pager 连接（主程序负责）**
 
 - Pager 连接注册存在主程序数据库里（`monitor_subs` / `monitor_tokens` / `monitor_pending`），**进程重启后自动恢复**，基线沿用库里的快照，停机期间的变化下次推送会补报，不会被吞。
-- 主程序内存里一个分区一个协程在算 diff（新增 / 变更标题、描述、状态、截止 / 删除 / 分区名与推送开关变化），推送统一走 **AIONUI HELPER** 子进程（`team send-message` / `session send-message`，正文与目标用 stdin JSON `{"to","message"}`），token 只进子进程环境，不进日志、不进接口响应。
-- 失败（helper 未配置 / 401 / 403 / 团队不存在）**静默跳过**，按「跳过重试间隔」重试、不设最大次数；期间的变更在 `monitor_pending` 里按条累积，恢复后**合并成一条**推出去（「共 N 条变化：新增 x、变更 y、删除 z」+ 标题列表），成功即清空。
+- 主程序内存里一个分区一个协程在算 diff（新增 / 变更标题、描述、状态、截止 / 删除 / 分区名与推送开关变化），推送由主程序**直连 AionUI 消息端点**（团队 `POST /api/teams/{team}/agents/{slot}/messages`、单聊 `POST /api/conversations/{id}/messages`，body `{"content":"…"}`，带 runtime-token / user-id / conversation-id 三个头），token 只在请求头里，不进日志、不进接口响应。
+- 失败（连接缺地址/token/user_id、401 / 403 / 团队不存在）**静默跳过**，按「跳过重试间隔」重试、不设最大次数；期间的变更在 `monitor_pending` 里按条累积，恢复后**合并成一条**推出去（「共 N 条变化：新增 x、变更 y、删除 z」+ 标题列表），成功即清空。
 - 分区标题栏有 `📋 N`（任务数）与 `💡 N`（Pager 连接数，0 也显示）；设置里「分区管理」每个分区行下面列出该分区的 Pager 连接（友好名、`#分区ID`、最后心跳、状态 200/401/404/-1），可单条删除，也可「清除本分区 Pager 连接」/「清除全部 Pager 连接」（都会二次确认并报条数）。
-- 设置页两个新项：**AIONUI HELPER 路径**（留空＝不推送，界面会提示「未配置：Pager 推送会被跳过」）、**跳过重试间隔**（默认 60 秒，范围 5–3600）。保存后立即生效，不用重启。注意「跳过重试间隔」是**推送失败后的重试间隔**，与每条 Pager 连接自己的检查间隔（`interval_sec`）不是一回事。
-- 团队/单聊保活由**主程序**统一做（pager 不再续租）：配了宿主地址（`aionui_base_url`）后，主程序每 60 秒对 `POST {host}/api/teams/{id}/active-lease`（单聊用 `/api/conversations/{id}/active-lease`）续租，token 轮流试，任一 200 即算成功。
+- 设置页「AionUI 推送设置」里只有一项：**跳过重试间隔**（默认 60 秒，范围 5–3600）。保存后立即生效，不用重启。（推送不再依赖任何外部 exe 路径）
+- **base URL 只由 Pager 连接自带**：pager 注册与每次心跳都会把它的 `AIONUI_BASE_URL` 上报到该连接的 token 记录；推送、取名、团队续租**只用连接自带的地址**（设置页不提供默认地址，也没有全局兜底）。连接没上报地址时该连接的推送直接跳过，并把结果记进 `last_status`（`-5`）。注意「跳过重试间隔」是**推送失败后的重试间隔**，与每条 Pager 连接自己的检查间隔（`interval_sec`）不是一回事。
+- 团队/单聊保活由**主程序**统一做（pager 不再续租）：按各连接上报的地址，每 60 秒对 `POST {host}/api/teams/{id}/active-lease`（单聊用 `/api/conversations/{id}/active-lease`）续租，token 轮流试，任一 200 即算成功；没上报地址的连接跳过。
 
 **MCP（给 AI 助手用）**
 
@@ -189,6 +190,8 @@ build.bat
 
 - **要双栈（同一条端口同时服务 IPv4 与 IPv6）就把 `0.0.0.0` 与 `::` 两条都加上**——它们是两个独立监听，互不抢占。
 - 某一条绑失败（端口被占用、域名解析不出来、地址不可用）只会把**这一条**报出来，其余照常生效；**全部失败**会自动回滚到改前的监听集合，不会把人锁在外面。
+- **端口可在同一区块指定**（1–65535，输入框与「保存并生效」共用一次保存）：先在新端口把所有地址开起来，全部成功才关旧端口；任一失败就回滚、旧端口继续服务。端口存在 `%LOCALAPPDATA%\AgentTodoBoard\settings.json` 的 `port`，重启后优先使用它。
+- 每个**已生效**地址旁会显示完整访问地址（IPv6 自动加方括号，如 `http://[::1]:17321`），并带一个「📋 复制」按钮，一键复制该条 URL。
 - 配置存在 `%LOCALAPPDATA%\AgentTodoBoard\listen.json`，形如 `{"binds":["127.0.0.1"]}`；文件损坏会备份成 `.bad` 并回退到仅本机。
 - **安全提醒**：一旦绑了非环回地址，网页端（`/`、`/app`）没有鉴权，同网段任何人都能读写；`X-Auth-Key` 只保护 `/api/tasks` 那套给 Agent 用的接口。设置页会在这种情况下显示黄色警示。
 
@@ -283,10 +286,10 @@ build.bat
 
 | 路径 | 说明 |
 | --- | --- |
-| `GET /api/settings` | 版本 / 接口地址 / 数据文件 / 自启状态 / `bind` / `listening` / `port` / `lan_open` / `default_bind` / `poll_interval_sec` / `aionui_helper_path` / `aionui_base_url` / `skip_interval_sec` |
+| `GET /api/settings` | 版本 / 接口地址 / 数据文件 / 自启状态 / `bind` / `listening` / `port` / `lan_open` / `default_bind` / `poll_interval_sec` / `aionui_base_url` / `skip_interval_sec` |
 | `PUT /api/settings/bind` | 保存监听地址：body `{"binds":[…]}`，返回 `ok` / `bind` / `listening` / `failures` / `error` |
 | `PUT /api/settings/poll` | 保存自动刷新间隔：body `{"interval_sec":N}`（1–300），返回 ok / interval_sec |
-| `PUT /api/settings/aion` | 保存Pager 推送设置：body `{"aionui_helper_path":"…","aionui_base_url":"…","skip_interval_sec":60}`（间隔 5–3600，路径可空），返回保存后的完整设置 |
+| `PUT /api/settings/aion` | 保存 Pager 推送设置：body `{"skip_interval_sec":60}`（5–3600）。`aionui_base_url` 仍可传/返回但**不再参与运行时回退**；`aionui_helper_path` 已废弃（传了也忽略） |
 | `POST /api/settings/autostart` | 开关开机自启动 |
 | `GET /api/bark` | 推送配置（key 只返回掩码） |
 | `PUT /api/bark` | 保存推送配置 |
