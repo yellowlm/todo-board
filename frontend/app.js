@@ -574,7 +574,9 @@ function monStatusText(code) {
 }
 
 function monName(m) {
-  if (m.team_name || m.slot_name) return [m.team_name, m.slot_name].filter(Boolean).join(' / ');
+  if (m.display_name) return m.display_name;
+  if (m.team_name || m.slot_name) return [m.team_name, m.slot_name].filter(Boolean).join(' - ');
+  if (m.conv_name) return m.conv_name;
   const tail = String(m.slot_id || m.conversation_id || '').slice(-6);
   return `${m.target_type}…${tail || '?'}`;
 }
@@ -584,6 +586,7 @@ function monitorRowHtml(sid, m) {
   return `<div class="mon-row">
     <span class="mon-name" title="${esc(name)}">${esc(name)}</span>
     <span class="mon-meta">#${sid}</span>
+    <span class="mon-meta">间隔 ${Number(m.interval_sec) || 0} 秒</span>
     <span class="mon-meta" title="${esc(m.last_seen || '')}">${esc(relTime(m.last_seen))}</span>
     <span class="mon-status ${monStatusClass(m.last_status)}">${esc(monStatusText(m.last_status))}</span>
     <button class="rowbtn danger" data-act="mon-del" data-mid="${m.id}" data-sid="${sid}" title="删除该 Pager 连接">🗑</button>
@@ -606,12 +609,18 @@ async function loadMonitorPanels() {
       el.innerHTML = `<div class="mon-meta">Pager 读取失败：${esc(e.message)}</div>`;
     }
   }));
-  const first = nodes[0];
-  if (first && !first.querySelector('[data-act="mon-clear-all"]')) {
-    const wrap = document.createElement('div');
-    wrap.className = 'mon-actions';
-    wrap.innerHTML = '<button class="rowbtn danger" data-act="mon-clear-all">清除全部 Pager 连接</button>';
-    first.appendChild(wrap);
+}
+
+// clearAllMonitors 清全部 Pager 连接（管理面，带 all=1）
+async function clearAllMonitors() {
+  const n = document.querySelectorAll('.mon-row').length;
+  if (!confirm(`确定清除全部 Pager 连接共 ${n} 个？所有会话都不再收到变化通知。`)) return;
+  try {
+    await api('DELETE', '/api/monitors?all=1');
+    toast(`已清除全部 ${n} 个 Pager 连接`);
+    await afterMonitorChange();
+  } catch (err) {
+    toast(err.message, true);
   }
 }
 
@@ -664,10 +673,10 @@ function renderSettings() {
     <div class="secrow">
       <div>
         <div class="secrow-name">💡 Pager 推送（AIONUI HELPER）</div>
-        <div class="secrow-key">${s.aionui_helper_path ? esc(s.aionui_helper_path) : '<b>未配置：Pager 推送会被跳过</b>'}</div>
       </div>
       <div class="actions">
         <input class="input" id="aionHelperPath" placeholder="helper 可执行文件完整路径" value="${esc(s.aionui_helper_path || '')}" style="width:280px">
+        <button class="rowbtn" data-act="aion-save">💾 保存</button>
       </div>
     </div>
     <div class="secrow">
@@ -677,7 +686,6 @@ function renderSettings() {
       </div>
       <div class="actions">
         <input class="input" id="aionSkipInput" type="number" min="5" max="3600" style="width:96px" value="${(s && s.skip_interval_sec) || 60}">
-        <button class="rowbtn" data-act="aion-save">💾 保存</button>
       </div>
     </div>
     <div class="secrow">
@@ -1088,6 +1096,7 @@ function bindEvents() {
   });
 
   $('#btnNewSection').addEventListener('click', openSectionCreator);
+  $('#btnClearAllMonitors').addEventListener('click', clearAllMonitors);
 
   $('#sectionsList').addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-act]');
@@ -1118,15 +1127,7 @@ function bindEvents() {
       return;
     }
     if (btn && btn.dataset.act === 'mon-clear-all') {
-      const n = document.querySelectorAll('.mon-row').length;
-      if (!confirm(`确定清除全部 Pager 连接共 ${n} 个？所有会话都不再收到变化通知。`)) return;
-      try {
-        await api('DELETE', '/api/monitors?all=1');
-        toast(`已清除全部 ${n} 个 Pager 连接`);
-        await afterMonitorChange();
-      } catch (err) {
-        toast(err.message, true);
-      }
+      await clearAllMonitors();
       return;
     }
     if (!btn) return;

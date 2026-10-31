@@ -319,3 +319,8 @@ svg.i.sm { width: 14px; height: 14px; }
 .mon-status.ok { color: #34D399; border-color: rgba(52, 211, 153, .45); background: rgba(52, 211, 153, .12); }
 .mon-status.err { color: #F87171; border-color: rgba(248, 113, 113, .45); background: rgba(248, 113, 113, .12); }
 .mon-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* 盯盘行：窄屏时元信息不挤爆名称（名称保底 96px，其余可压缩） */
+.mon-row { flex-wrap: nowrap; }
+.mon-name { min-width: 96px; }
+.mon-row .mon-meta { font-size: 11.5px; }

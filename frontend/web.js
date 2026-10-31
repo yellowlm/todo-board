@@ -613,10 +613,7 @@ function bind() {
           await api('DELETE', `/api/monitors?section=${sid}`);
           toast(`已清除分区 #${sid} 的 ${n} 个 Pager 连接`);
         } else {
-          const n = document.querySelectorAll('.mon-row').length;
-          if (!confirm(`确定清除全部 Pager 连接共 ${n} 个？所有会话都不再收到变化通知。`)) return;
-          await api('DELETE', '/api/monitors?all=1');
-          toast(`已清除全部 ${n} 个 Pager 连接`);
+          await clearAllMonitors();
         }
         await afterMonitorChange();
       } catch (err) {
@@ -648,6 +645,8 @@ function bind() {
       toast(e.message, true);
     }
   });
+
+  $('#monClearAll').addEventListener('click', clearAllMonitors);
 
   // 自动刷新间隔保存
   $('#pollSave').addEventListener('click', async () => {
@@ -794,7 +793,9 @@ function monStatusText(code) {
 }
 
 function monName(m) {
-  if (m.team_name || m.slot_name) return [m.team_name, m.slot_name].filter(Boolean).join(' / ');
+  if (m.display_name) return m.display_name;
+  if (m.team_name || m.slot_name) return [m.team_name, m.slot_name].filter(Boolean).join(' - ');
+  if (m.conv_name) return m.conv_name;
   const tail = String(m.slot_id || m.conversation_id || '').slice(-6);
   return `${m.target_type}…${tail || '?'}`;
 }
@@ -804,6 +805,7 @@ function monitorRowHtml(sid, m) {
   return `<div class="mon-row">
     <span class="mon-name" title="${esc(name)}">${esc(name)}</span>
     <span class="mon-meta">#${sid}</span>
+    <span class="mon-meta">间隔 ${Number(m.interval_sec) || 0} 秒</span>
     <span class="mon-meta" title="${esc(m.last_seen || '')}">${esc(relTime(m.last_seen))}</span>
     <span class="mon-status ${monStatusClass(m.last_status)}">${esc(monStatusText(m.last_status))}</span>
     <button class="btn danger" data-act="mon-del" data-mid="${m.id}" data-sid="${sid}" title="删除该 Pager 连接">🗑</button>
@@ -826,12 +828,18 @@ async function loadMonitorPanels() {
       el.innerHTML = `<div class="mon-meta">Pager 读取失败：${esc(e.message)}</div>`;
     }
   }));
-  const first = nodes[0];
-  if (first && !first.querySelector('[data-act="mon-clear-all"]')) {
-    const wrap = document.createElement('div');
-    wrap.className = 'mon-actions';
-    wrap.innerHTML = '<button class="btn danger" data-act="mon-clear-all">清除全部 Pager 连接</button>';
-    first.appendChild(wrap);
+}
+
+// clearAllMonitors 清全部 Pager 连接（管理面，带 all=1）
+async function clearAllMonitors() {
+  const n = document.querySelectorAll('.mon-row').length;
+  if (!confirm(`确定清除全部 Pager 连接共 ${n} 个？所有会话都不再收到变化通知。`)) return;
+  try {
+    await api('DELETE', '/api/monitors?all=1');
+    toast(`已清除全部 ${n} 个 Pager 连接`);
+    await afterMonitorChange();
+  } catch (err) {
+    toast(err.message, true);
   }
 }
 

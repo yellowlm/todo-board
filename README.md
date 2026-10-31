@@ -59,8 +59,10 @@
 - **英文 Skill：`skills/todo-board/SKILL.md`** —— Agent 读写任务的入口文档，写明基址、`X-Auth-Key` 认证、
   各端点、状态取值（`open` / `doing` / `done`）、错误码与示例，Agent 照着调即可，不需要人教。
 - **MCP：`mcp/todoboard-pager`（产物 `todoboard-pager.exe`）** —— 给 AionUI 这类 MCP 宿主的 Pager 工具。
-  启动时绑定「分区 + 该分区 KEY + 刷新间隔」，之后看板一有变化就在会话里发通知（新增任务逐条列标题，删除带
-  `[删除]` 前缀）。共 4 个工具：`start_monitor` / `stop_monitor` / `list_tasks` / `set_status`；不写任何本地文件。
+  它**只负责注册 / 心跳 / 注销**（`POST /api/monitors`、`PUT /api/monitors/heartbeat`、
+  `DELETE /api/monitors/{id}/self`）与看板读写；**推送与团队保活由主程序负责**，pager 不再自己发通知、
+  也不再直接访问 aioncore（原「读 TOML 取 aioncore key」「每 30 秒续租」的代码已停用，
+  `configfile.go` 里保留了一对通用的配置文件读写函数（整段注释））。共 4 个工具：`start_monitor` / `stop_monitor` / `list_tasks` / `set_status`；不写任何本地文件。
 - **内置 HTTP API** —— `X-Auth-Key` 按分区隔离，Agent 可增删改查任务、改三态；还可以订阅 `/api/events`
   的 SSE 事件流做实时联动（内置界面同样优先用这条事件流，断开时自动回退定时轮询）。分区之间的数据互不可见。
 
@@ -127,8 +129,8 @@
 - 主程序内存里一个分区一个协程在算 diff（新增 / 变更标题、描述、状态、截止 / 删除 / 分区名与推送开关变化），推送统一走 **AIONUI HELPER** 子进程（`team send-message` / `session send-message`，正文与目标用 stdin JSON `{"to","message"}`），token 只进子进程环境，不进日志、不进接口响应。
 - 失败（helper 未配置 / 401 / 403 / 团队不存在）**静默跳过**，按「跳过重试间隔」重试、不设最大次数；期间的变更在 `monitor_pending` 里按条累积，恢复后**合并成一条**推出去（「共 N 条变化：新增 x、变更 y、删除 z」+ 标题列表），成功即清空。
 - 分区标题栏有 `📋 N`（任务数）与 `💡 N`（Pager 连接数，0 也显示）；设置里「分区管理」每个分区行下面列出该分区的 Pager 连接（友好名、`#分区ID`、最后心跳、状态 200/401/404/-1），可单条删除，也可「清除本分区 Pager 连接」/「清除全部 Pager 连接」（都会二次确认并报条数）。
-- 设置页两个新项：**AIONUI HELPER 路径**（留空＝不推送，界面会提示「未配置：Pager 推送会被跳过」）、**跳过重试间隔**（默认 60 秒，范围 5–3600）。保存后立即生效，不用重启。
-- 团队/单聊保活：配了宿主地址（`aionui_base_url`）后，主程序每 60 秒对 `POST {host}/api/teams/{id}/active-lease`（单聊用 `/api/conversations/{id}/active-lease`）续租，token 轮流试，任一 200 即算成功。
+- 设置页两个新项：**AIONUI HELPER 路径**（留空＝不推送，界面会提示「未配置：Pager 推送会被跳过」）、**跳过重试间隔**（默认 60 秒，范围 5–3600）。保存后立即生效，不用重启。注意「跳过重试间隔」是**推送失败后的重试间隔**，与每条 Pager 连接自己的检查间隔（`interval_sec`）不是一回事。
+- 团队/单聊保活由**主程序**统一做（pager 不再续租）：配了宿主地址（`aionui_base_url`）后，主程序每 60 秒对 `POST {host}/api/teams/{id}/active-lease`（单聊用 `/api/conversations/{id}/active-lease`）续租，token 轮流试，任一 200 即算成功。
 
 **MCP（给 AI 助手用）**
 
@@ -220,6 +222,7 @@ build.bat
 | `list_tasks` | `{status?}` | `open` / `doing` / `done` / `all` |
 | `set_status` | `{task_id, status}` | `open` / `doing` / `done` |
 
+- **每个 Pager 连接自带检查间隔（`interval_sec`），各自独立、可以不一样，不设全局默认**（工具默认 60 秒、最小 1 秒；`start_monitor` 不传就用该默认值）。分区管理页的 Pager 列表会显示该连接的「间隔 N 秒」。
 - `start_monitor` 的参数相同时是**幂等**的：重复调用不会重建基线、也不会丢掉期间发生的变化；只有换分区或换间隔才会重新开始盯。
 - `section` 可写分区名、数字 ID 或 `#数字`；Pager 连接按分区 ID 追踪，分区改名后仍能继续收到通知。
 

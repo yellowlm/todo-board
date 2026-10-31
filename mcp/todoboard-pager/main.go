@@ -60,17 +60,17 @@ var (
 
 // monitorState 全部驻留内存，进程结束即失效。
 type monitorState struct {
-	running    bool
-	section    string
-	sectionID  int64
-	key        string
-	interval   int
-	target     string
-	hash       string
-	prev       []task
-	pending    string // 待重发的通知（鉴权/网络失败时不丢，按间隔重试）
-	subID      int64  // 主程序 /api/monitors 里本会话的注册 id（0 = 未注册）
-	kernelPush bool   // 主程序内核接管推送时为 true（本进程只轮询算 diff，不再自己发通知）
+	running   bool
+	section   string
+	sectionID int64
+	key       string
+	interval  int
+	target    string
+	hash      string
+	prev      []task
+	pending   string // 待重发的通知（鉴权/网络失败时不丢，按间隔重试）
+	subID     int64  // 主程序 /api/monitors 里本会话的注册 id（0 = 未注册）
+
 }
 
 type task struct {
@@ -98,11 +98,9 @@ func main() {
 	// 启动阶段绝不因缺少环境变量退出：AionUI 的「测试连接」不注入这些变量，
 	// 只要 initialize / tools/list 能应答即可。真正发消息时再检查。
 	if miss := missingEnv(); len(miss) > 0 {
-		dbg("未注入环境变量 %s：initialize/tools/list/list_tasks/set_status 可用，盯盘与发消息不可用", strings.Join(miss, ", "))
+		dbg("未注入环境变量 %s：initialize/tools/list/list_tasks/set_status 可用，盯盘注册不可用", strings.Join(miss, ", "))
 	} else if err := precheckTarget(); err != nil {
-		dbg("预检会话失败（不阻塞启动，发消息时会重试）：%v", err)
-	} else {
-		startLeaseLoop()
+		dbg("预检会话失败（不阻塞启动，start_monitor 时会重试）：%v", err)
 	}
 
 	dbg("启动：target=%s team=%s slot=%s board=%s", targetKind, targetTeam, targetSlot, boardBase)
@@ -127,7 +125,7 @@ func missingEnv() []string {
 	return missing
 }
 
-// ensureMessaging 在真正要发消息前调用：缺 env / 目标未判定时返回工具错误。
+// ensureMessaging 在注册盯盘前调用：缺 env / 目标未判定时返回工具错误。
 func ensureMessaging() error {
 	if miss := missingEnv(); len(miss) > 0 {
 		return fmt.Errorf("缺少环境变量 %s；这些变量由 AionUI 的 agent 宿主注入，缺失时无法把通知发回会话（list_tasks / set_status 不受影响）", strings.Join(miss, ", "))
@@ -136,7 +134,6 @@ func ensureMessaging() error {
 		if err := precheckTarget(); err != nil {
 			return err
 		}
-		startLeaseLoop()
 	}
 	return nil
 }
@@ -199,7 +196,10 @@ func precheckTarget() error {
 	if err != nil {
 		return fmt.Errorf("构造预检请求失败: %w", err)
 	}
-	applyAionAuth(req)
+	// 预检只为拿到 team/slot（注册要用），鉴权头直接用 env；不再读 TOML（configfile.go 里为注释保留的通用配置读写）
+	req.Header.Set("x-aionui-runtime-token", envToken)
+	req.Header.Set("x-aionui-user-id", envUserID)
+	req.Header.Set("x-aionui-conversation-id", envConvID)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("连接 AionUI 失败（%s）：%v；请检查 AIONUI_BASE_URL 是否可达", envBaseURL, err)
@@ -249,84 +249,6 @@ func pickString(m map[string]any, keys ...string) string {
 
 /* ---------------- 与 AionUI 通信 ---------------- */
 
-func targetURL() (string, error) {
-	if targetKind == "team" {
-		if targetTeam == "" || targetSlot == "" {
-			return "", errors.New("团队目标缺少 teamId 或 slot_id")
-		}
-		return fmt.Sprintf("%s/api/teams/%s/agents/%s/messages", envBaseURL, targetTeam, targetSlot), nil
-	}
-	return fmt.Sprintf("%s/api/conversations/%s/messages", envBaseURL, envConvID), nil
-}
-
-func sendMessage(content string) error {
-	if err := ensureMessaging(); err != nil {
-		return err
-	}
-	url, err := targetURL()
-	if err != nil {
-		return err
-	}
-	payload, _ := json.Marshal(map[string]string{"content": content})
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	applyAionAuth(req)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("发送消息失败: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-	// 202 = 排队开新轮；200 = 投进正在跑的一轮；都算成功
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("发送消息失败：HTTP %d %s", resp.StatusCode, truncate(string(body), 200))
-	}
-	return nil
-}
-
-var leaseOnce sync.Once
-
-func startLeaseLoop() {
-	leaseOnce.Do(func() { go leaseLoop() })
-}
-
-func leaseLoop() {
-	{
-		lease := func() {
-			var url string
-			if targetKind == "team" {
-				url = fmt.Sprintf("%s/api/teams/%s/active-lease", envBaseURL, targetTeam)
-			} else {
-				url = fmt.Sprintf("%s/api/conversations/%s/active-lease", envBaseURL, envConvID)
-			}
-			req, err := http.NewRequest(http.MethodPost, url, nil)
-			if err != nil {
-				return
-			}
-			applyAionAuth(req)
-			resp, err := httpClient.Do(req)
-			if err != nil {
-				dbg("续租失败: %v", err)
-				return
-			}
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				dbg("续租失败：HTTP %d", resp.StatusCode)
-			}
-		}
-		lease()
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			lease()
-		}
-	}
-}
-
 /* ---------------- 主程序盯盘注册（T123） ---------------- */
 
 // monitorEndpoint 调主程序的 /api/monitors 系列接口，统一带分区 key。
@@ -367,6 +289,7 @@ func registerMonitor(sectionID int64, key string, interval int) (int64, error) {
 		"conversation_id": envConvID,
 		"interval_sec":    interval,
 		"token":           envToken,
+		"user_id":         envUserID, // 查团队/会话友好名要用
 	}
 	code, raw, err := monitorEndpoint(http.MethodPost, "/api/monitors", key, body)
 	if err != nil {
@@ -397,20 +320,13 @@ func targetTypeForRegister() string {
 }
 
 // heartbeatMonitor 回报存活；status 为 HTTP 状态码（404 = 盯盘已被清除）。
-// 返回 pushBy 告诉本进程该由谁推送（主程序内核接管时不再重复发）。
-func heartbeatMonitor(sectionID int64, key string) (int, string, error) {
+func heartbeatMonitor(sectionID int64, key string) (int, error) {
 	body := map[string]any{"section_id": sectionID, "conversation_id": envConvID, "token": envToken}
-	code, raw, err := monitorEndpoint(http.MethodPut, "/api/monitors/heartbeat", key, body)
+	code, _, err := monitorEndpoint(http.MethodPut, "/api/monitors/heartbeat", key, body)
 	if err != nil {
-		return 0, "", err
+		return 0, err
 	}
-	var out struct {
-		PushBy string `json:"push_by"`
-	}
-	if code >= 200 && code < 300 {
-		_ = json.Unmarshal(raw, &out)
-	}
-	return code, out.PushBy, nil
+	return code, nil
 }
 
 func unregisterMonitor(subID int64, key string) {
@@ -554,34 +470,6 @@ func deref(s *string) string {
 	return *s
 }
 
-func buildNotice(list taskListResponse, added []task, changed, deleted []string) string {
-	// 三者都空但 hash 变了（例如只改了分区名/排序、或描述未触发 updated_at）也要发一条
-	if len(added) == 0 && len(changed) == 0 && len(deleted) == 0 {
-		return fmt.Sprintf("[通知] 看板有变化：共 %d 条（内容有更新）", len(list.Tasks))
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "[通知] 看板有变化：共 %d 条，新增 %d 条", len(list.Tasks), len(added))
-	if len(added) > 0 {
-		b.WriteString("\n")
-		for _, t := range added {
-			fmt.Fprintf(&b, "\n- %s", t.Title)
-		}
-	}
-	if len(deleted) > 0 {
-		fmt.Fprintf(&b, "\n\n删除 %d 条：", len(deleted))
-		for _, title := range deleted {
-			fmt.Fprintf(&b, "\n- [删除] %s", title)
-		}
-	}
-	if len(changed) > 0 {
-		fmt.Fprintf(&b, "\n\n另有 %d 条变更：", len(changed))
-		for _, title := range changed {
-			fmt.Fprintf(&b, "\n- %s", title)
-		}
-	}
-	return b.String()
-}
-
 var monitorStop chan struct{}
 
 // normalizeSection 允许 "4" / "#4" / "  #4 " / 分区名 等写法。
@@ -608,14 +496,13 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 
 	stateMu.Lock()
 	state = monitorState{
-		running:    true,
-		section:    section,
-		sectionID:  sectionID,
-		key:        key,
-		interval:   interval,
-		target:     currentTarget(),
-		subID:      subID,
-		kernelPush: regErr == nil,
+		running:   true,
+		section:   section,
+		sectionID: sectionID,
+		key:       key,
+		interval:  interval,
+		target:    currentTarget(),
+		subID:     subID,
 	}
 	stateMu.Unlock()
 
@@ -626,37 +513,14 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 		pollSection := strconv.FormatInt(sectionID, 10)
 		poll := func() {
 			// 心跳（T123）：404 = 用户已在别处清除盯盘 → 彻底停止轮询，不再注册、不再推送
-			if code, pushBy, err := heartbeatMonitor(sectionID, key); err == nil {
+			if code, err := heartbeatMonitor(sectionID, key); err == nil {
 				if code == http.StatusNotFound {
 					dbg("主程序里盯盘已被清除，停止本地轮询")
 					stopMonitor()
 					return
 				}
-				if pushBy != "" {
-					stateMu.Lock()
-					state.kernelPush = pushBy == "kernel"
-					stateMu.Unlock()
-				}
 			} else {
 				dbg("心跳失败（不影响轮询）：%v", err)
-			}
-			stateMu.Lock()
-			managed := state.kernelPush
-			stateMu.Unlock()
-
-			// 先补发上一条没发出去的通知（主程序内核接管推送时不再补发，避免重复通知）
-			stateMu.Lock()
-			pend, iv := state.pending, state.interval
-			stateMu.Unlock()
-			if pend != "" && !managed {
-				if err := sendMessage(pend); err != nil {
-					dbg("补发通知失败（%v），将按 %d 秒继续重试", err, iv)
-				} else {
-					stateMu.Lock()
-					state.pending = ""
-					stateMu.Unlock()
-					dbg("补发通知成功")
-				}
 			}
 
 			list, raw, err := boardTasks(pollSection, key, "")
@@ -681,28 +545,13 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 			stateMu.Unlock()
 
 			if prevHash == "" {
-				// 首轮只建立基线，不发通知
+				// 首轮只建立基线（推送由主程序负责，这里只记日志）
 				dbg("基线建立：%s", summarize(list))
 				return
 			}
-			if managed {
-				dbg("推送由主程序内核负责，本进程只更新基线（新增 %d / 变更 %d / 删除 %d）",
-					len(added), len(changed), len(deleted))
-				return
-			}
-			msg := buildNotice(list, added, changed, deleted)
-			// 先落 pending 再发：失败（读 key 失败 / 401 / 403 / 网络）时由下一轮 tick 补发，不丢消息
-			stateMu.Lock()
-			state.pending = msg
-			stateMu.Unlock()
-			if err := sendMessage(msg); err != nil {
-				dbg("发通知失败（读取 key 失败 / 鉴权失败），将按 %d 秒重试：%v", interval, err)
-			} else {
-				stateMu.Lock()
-				state.pending = ""
-				stateMu.Unlock()
-				dbg("已发通知（新增 %d / 变更 %d / 删除 %d）", len(added), len(changed), len(deleted))
-			}
+			// 推送已由主程序负责：本进程只更新基线，不再自己发通知
+			dbg("看板有变化，已更新基线（新增 %d / 变更 %d / 删除 %d）；推送由主程序负责",
+				len(added), len(changed), len(deleted))
 		}
 		poll()
 		for {

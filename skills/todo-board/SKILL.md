@@ -167,9 +167,12 @@ re-registers on its own. Restart the monitor from the agent side if you still ne
 
 ## MCP: todoboard-pager
 
-A companion MCP server (`Dev\build\todoboard-pager.exe`, source in `mcp/todoboard-pager/`) that keeps
-watching one section inside an AionUI session and pushes a notice to the current conversation whenever
-the board changes. Works both in a team member slot and in a one-to-one conversation.
+A companion MCP server (`Dev\build\todoboard-pager.exe`, source in `mcp/todoboard-pager/`) that registers
+one section as a watch inside an AionUI session. It only **registers / heartbeats / unregisters**
+(`POST /api/monitors`, `PUT /api/monitors/heartbeat`, `DELETE /api/monitors/{id}/self`) and reads/writes
+tasks; **delivery and team keep-alive belong to the board process**, which sends through the AIONUI HELPER
+subprocess. The pager no longer sends notices itself, no longer renews leases, and no longer reads the
+aioncore TOML/key files (`configfile.go` keeps a generic commented read/write pair for future reuse).
 
 **Required before starting** (ask the user, never guess):
 

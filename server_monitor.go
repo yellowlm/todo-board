@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +25,7 @@ type monitorBody struct {
 	ConversationID string  `json:"conversation_id"`
 	IntervalSec    *int    `json:"interval_sec"`
 	Token          string  `json:"token"`
+	UserID         string  `json:"user_id"` // 可选：AionUI 用户 id（查友好名要三个头）
 }
 
 // monitorView 对外结构：绝不含 token / baseline。
@@ -42,6 +45,8 @@ type monitorView struct {
 	LastStatusAt   string `json:"last_status_at"`
 	TeamName       string `json:"team_name"`
 	SlotName       string `json:"slot_name"`
+	ConvName       string `json:"conv_name"`
+	DisplayName    string `json:"display_name"`
 }
 
 func (s *Server) handleMonitorCreate(w http.ResponseWriter, r *http.Request) {
@@ -73,6 +78,9 @@ func (s *Server) handleMonitorCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, err)
 		return
+	}
+	if uid := strings.TrimSpace(in.UserID); uid != "" {
+		saveAionUserID(sub.ConversationID, uid)
 	}
 	code := http.StatusOK
 	if created {
@@ -215,7 +223,28 @@ func (s *Server) monitorViews(subs []MonitorSub) []monitorView {
 	}
 	statuses, _ := s.store.MonitorTokenStatuses()
 	cfg := loadAppSettings()
-	nameCache := map[string][2]string{}
+
+	// 先把要查的目标去重，并发查（每个自带 2s 超时），避免 20 个分区串行等待
+	keys := map[string]string{} // cacheKey -> 该目标对应的会话 id（取 token / user id 用）
+	for _, sub := range subs {
+		if sub.TargetType == "team" && sub.TeamID != "" {
+			if _, ok := keys["team:"+sub.TeamID]; !ok {
+				keys["team:"+sub.TeamID] = sub.ConversationID
+			}
+		} else if sub.ConversationID != "" {
+			keys["conv:"+sub.ConversationID] = sub.ConversationID
+		}
+	}
+	var wg sync.WaitGroup
+	for k, convID := range keys {
+		wg.Add(1)
+		go func(k, convID string) {
+			defer wg.Done()
+			resolveNames(cfg, k, s.store.MonitorToken(convID), convID)
+		}(k, convID)
+	}
+	wg.Wait()
+
 	for _, sub := range subs {
 		v := monitorView{
 			ID:             sub.ID,
@@ -236,78 +265,247 @@ func (s *Server) monitorViews(subs []MonitorSub) []monitorView {
 			}
 			v.LastStatusAt = st[1]
 		}
-		if sub.TeamID != "" {
-			names, ok := nameCache[sub.TeamID]
-			if !ok {
-				names = lookupTeamNames(cfg, sub.TeamID, s.store.MonitorToken(sub.ConversationID), sub.SlotID)
-				nameCache[sub.TeamID] = names
+		if sub.TargetType == "team" && sub.TeamID != "" {
+			e := getNames("team:" + sub.TeamID)
+			v.TeamName = e.team
+			if sub.SlotID != "" {
+				v.SlotName = e.slots[sub.SlotID]
 			}
-			v.TeamName, v.SlotName = names[0], names[1]
+			v.DisplayName = joinName(v.TeamName, v.SlotName)
+		} else {
+			e := getNames("conv:" + sub.ConversationID)
+			v.ConvName = e.team
+			v.DisplayName = v.ConvName
 		}
 		out = append(out, v)
 	}
 	return out
 }
 
-// lookupTeamNames 尽力查团队/成员友好名；查不到就留空，绝不因为查询失败影响接口。
-func lookupTeamNames(cfg appSettings, teamID, token, slotID string) [2]string {
-	var out [2]string
-	if cfg.BaseURL == "" || teamID == "" {
-		return out
+func joinName(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			kept = append(kept, s)
+		}
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/teams/%s", cfg.BaseURL, teamID), nil)
-	if err != nil {
-		return out
-	}
-	if token != "" {
-		req.Header.Set("x-aionui-runtime-token", token)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return out
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return out
-	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return strings.Join(kept, " - ")
+}
 
-	type agent struct {
+/* ---------------- 友好名查询（60s 内存缓存） ---------------- */
+
+type nameInfo struct {
+	team  string
+	slots map[string]string
+	exp   time.Time
+}
+
+var (
+	nameCacheMu sync.Mutex
+	nameCache   = map[string]nameInfo{}
+	nameLoading = map[string]bool{}
+)
+
+const nameCacheTTL = 60 * time.Second
+
+func getNames(key string) nameInfo {
+	nameCacheMu.Lock()
+	defer nameCacheMu.Unlock()
+	if e, ok := nameCache[key]; ok && time.Now().Before(e.exp) {
+		return e
+	}
+	return nameInfo{}
+}
+
+// resolveNames 查一次并写缓存；查询中（并发）或失败都不阻塞调用方，直接回退。
+func resolveNames(cfg appSettings, key, token, convID string) {
+	if cfg.BaseURL == "" || token == "" {
+		return // 没配宿主地址 / 没有 token：直接回退
+	}
+	userID := loadAionUserID(convID)
+	if userID == "" {
+		return // 不知道用户 id 就查不了（aioncore 要 runtime-token + user-id + conversation-id 三个头）
+	}
+	nameCacheMu.Lock()
+	if e, ok := nameCache[key]; ok && time.Now().Before(e.exp) {
+		nameCacheMu.Unlock()
+		return
+	}
+	if nameLoading[key] {
+		nameCacheMu.Unlock()
+		return // 同目标正在查，本次先用回退值
+	}
+	nameLoading[key] = true
+	nameCacheMu.Unlock()
+
+	info := nameInfo{slots: map[string]string{}, exp: time.Now().Add(nameCacheTTL)}
+	ok := false
+	if strings.HasPrefix(key, "team:") {
+		info.team, info.slots, ok = fetchTeamNames(cfg, strings.TrimPrefix(key, "team:"), token, userID, convID)
+	} else {
+		info.team, ok = fetchConversationName(cfg, strings.TrimPrefix(key, "conv:"), token, userID, convID)
+	}
+
+	nameCacheMu.Lock()
+	delete(nameLoading, key)
+	if ok {
+		nameCache[key] = info
+	} else {
+		// 失败也缓存一小段（10s），避免失败时每次刷新都打 aioncore
+		info.exp = time.Now().Add(10 * time.Second)
+		nameCache[key] = info
+	}
+	nameCacheMu.Unlock()
+}
+
+func fetchTeamNames(cfg appSettings, teamID, token, userID, convID string) (string, map[string]string, bool) {
+	body, ok := aionGet(cfg, "/api/teams/"+teamID, token, userID, convID)
+	if !ok {
+		return "", nil, false
+	}
+	type assistant struct {
 		SlotID  string `json:"slot_id"`
 		SlotID2 string `json:"slotId"`
 		Name    string `json:"name"`
 	}
 	var doc struct {
-		Name   string  `json:"name"`
-		Agents []agent `json:"agents"`
-		Data   struct {
-			Name   string  `json:"name"`
-			Agents []agent `json:"agents"`
+		Name       string      `json:"name"`
+		Assistants []assistant `json:"assistants"`
+		Agents     []assistant `json:"agents"`
+		Data       struct {
+			Name       string      `json:"name"`
+			Assistants []assistant `json:"assistants"`
+			Agents     []assistant `json:"agents"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return out
+		return "", nil, false
 	}
-	out[0] = strings.TrimSpace(doc.Name)
-	if out[0] == "" {
-		out[0] = strings.TrimSpace(doc.Data.Name)
+	name := strings.TrimSpace(doc.Data.Name)
+	if name == "" {
+		name = strings.TrimSpace(doc.Name)
 	}
-	agents := doc.Agents
-	if len(agents) == 0 {
-		agents = doc.Data.Agents
+	list := doc.Data.Assistants
+	if len(list) == 0 {
+		list = doc.Data.Agents
 	}
-	if slotID != "" {
-		for _, a := range agents {
-			id := strings.TrimSpace(a.SlotID)
-			if id == "" {
-				id = strings.TrimSpace(a.SlotID2)
-			}
-			if id == slotID {
-				out[1] = strings.TrimSpace(a.Name)
-				break
-			}
+	if len(list) == 0 {
+		list = doc.Assistants
+	}
+	if len(list) == 0 {
+		list = doc.Agents
+	}
+	slots := map[string]string{}
+	for _, a := range list {
+		id := strings.TrimSpace(a.SlotID)
+		if id == "" {
+			id = strings.TrimSpace(a.SlotID2)
+		}
+		if id != "" {
+			slots[id] = strings.TrimSpace(a.Name)
 		}
 	}
-	return out
+	if name == "" && len(slots) == 0 {
+		return "", nil, false
+	}
+	return name, slots, true
+}
+
+func fetchConversationName(cfg appSettings, convID, token, userID, convHint string) (string, bool) {
+	body, ok := aionGet(cfg, "/api/conversations/"+convID, token, userID, convHint)
+	if !ok {
+		return "", false
+	}
+	var doc struct {
+		Name string `json:"name"`
+		Data struct {
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return "", false
+	}
+	name := strings.TrimSpace(doc.Data.Name)
+	if name == "" {
+		name = strings.TrimSpace(doc.Name)
+	}
+	if name == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// aionGet 查 aioncore；2 秒超时、任何失败都只返回 false（绝不阻塞或 500）。
+func aionGet(cfg appSettings, path, token, userID, convID string) ([]byte, bool) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, cfg.BaseURL+path, nil)
+	if err != nil {
+		return nil, false
+	}
+	req.Header.Set("x-aionui-runtime-token", token)
+	req.Header.Set("x-aionui-user-id", userID)
+	if convID != "" {
+		req.Header.Set("x-aionui-conversation-id", convID)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, false
+	}
+	return body, true
+}
+
+/* ---------------- AionUI user id（查友好名要三个头） ---------------- */
+
+// aionUsersPath 存 %LOCALAPPDATA%\AgentTodoBoard\aion_users.json（conversation_id -> user_id）。
+// 只用于查团队/会话名，不进 API 响应、不进日志。
+func aionUsersPath() string { return filepath.Join(appDataDir(), "aion_users.json") }
+
+func loadAionUserID(convID string) string {
+	if convID == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(aionUsersPath())
+	if err != nil {
+		return ""
+	}
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(m[convID])
+}
+
+func saveAionUserID(convID, userID string) {
+	if convID == "" || userID == "" {
+		return
+	}
+	path := aionUsersPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	m := map[string]string{}
+	if raw, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(raw, &m)
+	}
+	if m[convID] == userID {
+		return
+	}
+	m[convID] = userID
+	raw, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }

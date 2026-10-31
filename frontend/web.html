@@ -75,6 +75,9 @@
         <div class="field"><label>图标 URL（可留空）</label><input class="input" id="barkIcon" placeholder="留空则不带图标"></div>
         <div class="secrow-key" id="barkHint"></div>
         <div class="field"><label>分区管理（删除会连同该分区任务一起删除）</label>
+          <div class="mon-actions" style="justify-content:flex-start;margin-bottom:8px">
+            <button class="btn danger" id="monClearAll" style="color:var(--danger);border-color:var(--danger);background:var(--danger-soft)">清除全部 Pager 连接</button>
+          </div>
           <div id="sectionAdmin" class="section-admin"></div>
         </div>
         <div class="formrow">
@@ -87,8 +90,9 @@
             <button class="btn" id="pollSave">保存</button>
           </div>
         </div>
-        <div class="field"><label>💡 Pager 推送 · AIONUI HELPER 路径（空＝不推送）</label>
+        <div class="field"><label>💡 Pager 推送（AIONUI HELPER）</label>
           <input class="input" id="aionHelperPath" placeholder="helper 可执行文件完整路径，例如 C:\...\aioncore.exe">
+          <button class="btn" id="aionSave" style="margin-top:8px">保存</button>
         </div>
         <div class="formrow">
           <div>
@@ -97,7 +101,6 @@
           </div>
           <div class="actions">
             <input class="input" id="aionSkipSec" type="number" min="5" max="3600" style="width:96px">
-            <button class="btn" id="aionSave">保存</button>
           </div>
         </div>
         <div class="bark-actions">
