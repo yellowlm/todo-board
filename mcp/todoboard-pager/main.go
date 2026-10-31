@@ -106,6 +106,13 @@ func main() {
 	}
 
 	dbg("启动：target=%s team=%s slot=%s board=%s", targetKind, targetTeam, targetSlot, boardBase)
+	if len(missingEnv()) == 0 {
+		if st, ok := loadPagerState(); ok {
+			dbg("检测到本地盯盘参数（分区 #%d，间隔 %d 秒），自动恢复", st.SectionID, st.Interval)
+			startMonitor(st.Section, st.SectionID, st.Key, st.Interval)
+		}
+	}
+
 	setupShutdownCleanup()
 	serve(os.Stdin, os.Stdout)
 	shutdownUnregister() // stdin EOF / 正常结束：注销自己注册的那条
@@ -170,13 +177,20 @@ func ensureMessaging() error {
 
 /* ---------------- 日志（默认关闭） ---------------- */
 
-// logFileName 与数据库同名风格：<FQDN>.pager.log（本机即 work0.yellowlm.net.pager.log）。
-func logFileName() string { return sanitizeFileName(computerFQDN()) + ".pager.log" }
+// logFileName 按会话命名：<conversation_id>.log（与参数 json 同名不同后缀）；
+// 取不到会话 ID 时回退 pager.log。
+func logFileName() string {
+	if id := strings.TrimSpace(os.Getenv("AIONUI_CONVERSATION_ID")); id != "" {
+		return sanitizeFileName(id) + ".log"
+	}
+	return "pager.log"
+}
 
 // resolveLogPath 解析 TODOBOARD_DEBUGE：
 //   - 空 → 返回 ""（不写日志，开关语义不变）
-//   - 完整文件路径（带目录且以 .log 结尾）→ 原样使用
-//   - 目录 / 以分隔符结尾 / 只有文件名 → 该目录（或 exe 同目录）下的 <FQDN>.pager.log
+//   - 完整文件路径（带目录且以 .log 结尾）→ 原样使用（不改名）
+//   - 目录 / 以分隔符结尾 → 该目录下的 pager.log
+//   - 只有文件名 → <exe 目录>\<FQDN>\pager.log
 func resolveLogPath(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -192,7 +206,8 @@ func resolveLogPath(raw string) string {
 	if dir != "" && dir != "." && strings.HasSuffix(strings.ToLower(base), ".log") {
 		return raw // 完整文件路径：照用，不改名
 	}
-	return filepath.Join(exeDirPath(), logFileName())
+	// 裸文件名（如 pager.log）：落到 <exe 目录>\<FQDN>\<FQDN>.pager.log
+	return filepath.Join(pagerStateDir(), logFileName())
 }
 
 func setupLogging() {
@@ -214,6 +229,35 @@ func setupLogging() {
 }
 
 func dbg(format string, args ...any) { logger.Printf(format, args...) }
+
+// 失败日志节流：每类只写第一条，恢复正常后再写一条「已恢复」。
+// 避免主程序长时间不在时按 interval 刷屏。
+var (
+	throttleMu    sync.Mutex
+	throttleState = map[string]bool{}
+)
+
+// logOnce 失败态：同一 key 只在首次（或从正常态转失败）时写日志。
+func logOnce(key, format string, args ...any) {
+	throttleMu.Lock()
+	already := throttleState[key]
+	throttleState[key] = true
+	throttleMu.Unlock()
+	if !already {
+		dbg(format, args...)
+	}
+}
+
+// logRecovered 从失败态恢复：只在状态翻转时写一条。
+func logRecovered(key, format string, args ...any) {
+	throttleMu.Lock()
+	was := throttleState[key]
+	delete(throttleState, key)
+	throttleMu.Unlock()
+	if was {
+		dbg(format, args...)
+	}
+}
 
 func fatal(code int, msg string) {
 	dbg("退出(%d)：%s", code, msg)
@@ -298,6 +342,102 @@ func pickString(m map[string]any, keys ...string) string {
 }
 
 /* ---------------- 与 AionUI 通信 ---------------- */
+
+// registerWatch 是唯一的注册入口：手工 start_monitor、启动恢复、自动补注册都调它。
+// 成功后写回 state.subID 并落盘参数；失败只按类别节流记一条日志。
+func registerWatch(section string, sectionID int64, key string, interval int, logKey string) (int64, error) {
+	id, err := registerMonitor(sectionID, key, interval)
+	if err != nil {
+		logOnce(logKey, "登记盯盘失败（主程序可能未启动，每 %d 秒重试一次）：%v", interval, err)
+		return 0, err
+	}
+	stateMu.Lock()
+	state.subID = id
+	stateMu.Unlock()
+	logRecovered(logKey, "登记盯盘成功（#%d），已接上心跳与轮询", id)
+	savePagerState(pagerState{SectionID: sectionID, Section: section, Interval: interval, Key: key})
+	return id, nil
+}
+
+/* ---------------- 盯盘参数落盘（T156） ---------------- */
+
+type pagerState struct {
+	SectionID int64  `json:"section_id"`
+	Section   string `json:"section"`
+	Interval  int    `json:"interval_sec"`
+	Key       string `json:"key"`
+}
+
+// pagerStateDir：<exe 目录>\<FQDN>\（与库名同源，主程序启动时也会建）。
+func pagerStateDir() string {
+	return filepath.Join(exeDirPath(), sanitizeFileName(computerFQDN()))
+}
+
+func pagerStatePath(convID string) string {
+	return filepath.Join(pagerStateDir(), sanitizeFileName(convID)+".json")
+}
+
+// savePagerState 原子写该会话的盯盘参数（不存 base_url / token）。
+func savePagerState(st pagerState) {
+	if envConvID == "" {
+		return
+	}
+	dir := pagerStateDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		dbg("创建盯盘参数目录失败：%v", err)
+		return
+	}
+	raw, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return
+	}
+	path := pagerStatePath(envConvID)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		dbg("写盯盘参数失败：%v", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		dbg("保存盯盘参数失败：%v", err)
+		return
+	}
+	dbg("已保存盯盘参数：分区 #%d，间隔 %d 秒", st.SectionID, st.Interval)
+}
+
+func loadPagerState() (pagerState, bool) {
+	if envConvID == "" {
+		return pagerState{}, false
+	}
+	raw, err := os.ReadFile(pagerStatePath(envConvID))
+	if err != nil {
+		return pagerState{}, false
+	}
+	var st pagerState
+	if err := json.Unmarshal(raw, &st); err != nil || st.SectionID == 0 || st.Key == "" {
+		return pagerState{}, false
+	}
+	if st.Interval < 1 {
+		st.Interval = 60
+	}
+	return st, true
+}
+
+func pagerStateExists() bool {
+	if envConvID == "" {
+		return false
+	}
+	_, err := os.Stat(pagerStatePath(envConvID))
+	return err == nil
+}
+
+func deletePagerState() {
+	if envConvID == "" {
+		return
+	}
+	if err := os.Remove(pagerStatePath(envConvID)); err != nil && !os.IsNotExist(err) {
+		dbg("删除盯盘参数失败：%v", err)
+	}
+}
 
 /* ---------------- 主程序盯盘注册（T123） ---------------- */
 
@@ -539,11 +679,8 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 	stop := make(chan struct{})
 	monitorStop = stop
 
-	// 先在主程序登记（T123）：登记成功后推送由主程序内核负责，本进程只轮询 + 心跳
-	subID, regErr := registerMonitor(sectionID, key, interval)
-	if regErr != nil {
-		dbg("主程序登记盯盘失败（本地继续轮询、由本进程推送）：%v", regErr)
-	}
+	// 先在主程序登记（同一注册函数；主程序没起来也不退出，poll 里按 interval 重试）
+	subID, _ := registerWatch(section, sectionID, key, interval, "register")
 
 	stateMu.Lock()
 	state = monitorState{
@@ -563,22 +700,46 @@ func startMonitor(section string, sectionID int64, key string, interval int) {
 		// 一律用启动时解析出的分区 ID 轮询：分区改名后依然能盯
 		pollSection := strconv.FormatInt(sectionID, 10)
 		poll := func() {
-			// 心跳（T123）：404 = 用户已在别处清除盯盘 → 彻底停止轮询，不再注册、不再推送
+			// 还没登记成功（主程序当时不在）→ 每拍用同一注册函数重试
+			stateMu.Lock()
+			curID := state.subID
+			stateMu.Unlock()
+			if curID == 0 {
+				if _, err := registerWatch(section, sectionID, key, interval, "reregister"); err != nil {
+					return // 主程序不在：本拍不做心跳/轮询，下拍再来
+				}
+			}
+
+			// 心跳：404 = 主程序里没有这条了
 			if code, err := heartbeatMonitor(sectionID, key); err == nil {
 				if code == http.StatusNotFound {
-					dbg("主程序里盯盘已被清除，停止本地轮询")
-					stopMonitor()
-					return
+					if pagerStateExists() {
+						// 本地参数还在：主程序换库/重启丢了行 → 用同一注册函数补注册
+						stateMu.Lock()
+						state.subID = 0
+						stateMu.Unlock()
+						if _, err := registerWatch(section, sectionID, key, interval, "reregister"); err != nil {
+							return
+						}
+					} else {
+						// 参数文件已被主程序删除 = 用户清除 → 停止盯盘
+						dbg("主程序里盯盘已被清除，停止本地轮询")
+						stopMonitor()
+						return
+					}
+				} else {
+					logRecovered("heartbeat", "心跳已恢复")
 				}
 			} else {
-				dbg("心跳失败（不影响轮询）：%v", err)
+				logOnce("heartbeat", "心跳失败（不影响轮询，按间隔重试）：%v", err)
 			}
 
 			list, raw, err := boardTasks(pollSection, key, "")
 			if err != nil {
-				dbg("轮询失败: %v", err)
+				logOnce("poll", "轮询失败（按间隔重试）：%v", err)
 				return
 			}
+			logRecovered("poll", "轮询已恢复")
 			sum := sha256.Sum256(raw)
 			hash := hex.EncodeToString(sum[:])
 
@@ -634,6 +795,7 @@ func stopMonitorAndUnregister() {
 		unregisterMonitor(st.subID, st.key)
 	}
 	stopMonitor()
+	deletePagerState()
 }
 
 func currentMonitor() monitorState {

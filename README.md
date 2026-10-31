@@ -9,6 +9,14 @@
 一个本地优先、**给人和 AI Agent 共用**的待办看板：Windows 桌面壳（Go + WebView2）+ 内嵌 HTTP 服务 + SQLite。
 人和 Agent 读写的是同一份数据——你在界面上勾选完成，Agent 通过 API 或 MCP 看到的就是同一条；反之亦然。
 
+## 亮点
+
+- **AI 原生，不是给老工具补个接口**：挂上 Pager，会话里就有人替你盯住某个分区；看板一变，通知以**用户消息**的形态回到会话里，Agent 直接读得到，不用人转述、不用自己轮询。
+- **重启不掉线**：盯盘参数落在本机，pager 重启自己读回来、走同一条注册路径恢复；主程序不在时它按自己的间隔一直重试，主程序一回来就自动补注册——不用人再点一次。
+  **已知限制**：盯盘是挂在会话上的，靠会话里那个 pager 进程活着。AionUI 重启后如果没有把盯盘 Agent（会话）重新拉起来，就没有新 pager 去重新注册和推送；手动把会话/助手拉起来，它自己就恢复了。
+- **推送不重复、不漏、可追责**：所有推送由主程序内核统一发出、直连 AionUI 消息端点、同一分区串行；失败的攒成 pending 按间隔重试，每条连接上挂着状态码（`200` / `401` / `-5`），为什么没推一眼看得出来。
+- **手机也跟着响**：Bark 推送有分区级开关、任务级覆盖，外加一个总开关一票否决——想安静的时候是真的安静。
+
 ## 功能
 
 ### 桌面版
@@ -62,7 +70,7 @@
   它**只负责注册 / 心跳 / 注销**（`POST /api/monitors`、`PUT /api/monitors/heartbeat`、
   `DELETE /api/monitors/{id}/self`）与看板读写；**推送与团队保活由主程序负责**，pager 不再自己发通知、
   也不再直接访问 aioncore（原「读 TOML 取 aioncore key」「每 30 秒续租」的代码已停用，
-  `configfile.go` 里保留了一对通用的配置文件读写函数（整段注释））。共 4 个工具：`start_monitor` / `stop_monitor` / `list_tasks` / `set_status`；不写任何本地文件。
+  `configfile.go` 里保留了一对通用的配置文件读写函数（整段注释））。共 4 个工具：`start_monitor` / `stop_monitor` / `list_tasks` / `set_status`；盯盘参数写在本机 `<exe 目录>\<FQDN>\<会话ID>.json`，重启后 pager 自己读回来恢复。
 - **内置 HTTP API** —— `X-Auth-Key` 按分区隔离，Agent 可增删改查任务、改三态；还可以订阅 `/api/events`
   的 SSE 事件流做实时联动（内置界面同样优先用这条事件流，断开时自动回退定时轮询）。分区之间的数据互不可见。
 
@@ -125,7 +133,7 @@
 
 **Pager 连接（主程序负责）**
 
-- Pager 连接注册存在主程序数据库里（`monitor_subs` / `monitor_tokens` / `monitor_pending`），**进程重启后自动恢复**，基线沿用库里的快照，停机期间的变化下次推送会补报，不会被吞。
+- Pager 连接注册存在主程序数据库里（`monitor_subs` 一行含 token / user_id / base_url / last_status；待推送的变更在 `monitor_pending`），**进程重启后自动恢复**，基线沿用库里的快照，停机期间的变化下次推送会补报，不会被吞。
 - 主程序内存里一个分区一个协程在算 diff（新增 / 变更标题、描述、状态、截止 / 删除 / 分区名与推送开关变化），推送由主程序**直连 AionUI 消息端点**（团队 `POST /api/teams/{team}/agents/{slot}/messages`、单聊 `POST /api/conversations/{id}/messages`，body `{"content":"…"}`，带 runtime-token / user-id / conversation-id 三个头），token 只在请求头里，不进日志、不进接口响应。
 - 失败（连接缺地址/token/user_id、401 / 403 / 团队不存在）**静默跳过**，按「跳过重试间隔」重试、不设最大次数；期间的变更在 `monitor_pending` 里按条累积，恢复后**合并成一条**推出去（「共 N 条变化：新增 x、变更 y、删除 z」+ 标题列表），成功即清空。
 - 分区标题栏有 `📋 N`（任务数）与 `💡 N`（Pager 连接数，0 也显示）；设置里「分区管理」每个分区行下面列出该分区的 Pager 连接（友好名、`#分区ID`、最后心跳、状态 200/401/404/-1），可单条删除，也可「清除本分区 Pager 连接」/「清除全部 Pager 连接」（都会二次确认并报条数）。
@@ -232,7 +240,7 @@ build.bat
 通知形如 `[通知] 看板有变化：共 N 条，新增 M 条`，随后逐条列出全部新增任务标题；被删除的任务带 `- [删除] 标题` 前缀，
 只改描述/截止等也算变化。
 
-**不写任何本地文件**（无快照、无状态文件），进程或团队重建后由 Agent 重新 `start_monitor` 即可。
+**盯盘参数保存在本机 `<exe 目录>\<FQDN>\<会话ID>.json`**（只有分区、间隔、key，不含 token 与地址）；进程或团队重建后 pager 读回来，走同一条 `start_monitor` 注册逻辑自动恢复，不用 Agent 再调一次。主程序不在时它按自己的间隔重试注册，主程序起来后自动接上。
 日志默认关闭，只有设置 `TODOBOARD_DEBUGE`（文件或目录路径）时才写。
 
 配套文档：外部 API 说明 `skills/todo-board/SKILL.md`（含 MCP 一节）、专用 Agent 系统提示词

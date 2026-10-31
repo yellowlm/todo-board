@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -76,6 +76,7 @@ func (s *Server) handleMonitorCreate(w http.ResponseWriter, r *http.Request) {
 		IntervalSec:    interval,
 		Token:          in.Token,
 		BaseURL:        in.BaseURL,
+		UserID:         in.UserID,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -131,10 +132,16 @@ func (s *Server) handleMonitorDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	sub, err := s.store.MonitorByID(id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 	if err := s.store.DeleteMonitor(id); err != nil {
 		writeErr(w, err)
 		return
 	}
+	removePagerState(sub.ConversationID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": 1, "id": id})
 }
 
@@ -162,6 +169,7 @@ func (s *Server) handleMonitorDeleteSelf(w http.ResponseWriter, r *http.Request)
 		writeErr(w, err)
 		return
 	}
+	// pager 自己注销（/self）时保留本地参数文件，便于下次启动自动恢复
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": 1, "id": id})
 }
 
@@ -175,10 +183,14 @@ func (s *Server) handleMonitorDeleteMany(w http.ResponseWriter, r *http.Request)
 			writeErr(w, err)
 			return
 		}
+		convs, _ := s.store.MonitorConversations(&sid.ID)
 		n, err := s.store.DeleteMonitorsBySection(sid.ID)
 		if err != nil {
 			writeErr(w, err)
 			return
+		}
+		for _, c := range convs {
+			removePagerState(c)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": n, "section": sid.ID})
 		return
@@ -188,10 +200,14 @@ func (s *Server) handleMonitorDeleteMany(w http.ResponseWriter, r *http.Request)
 		writeErr(w, ErrBadBody)
 		return
 	}
+	convs, _ := s.store.MonitorConversations(nil)
 	n, err := s.store.DeleteAllMonitors()
 	if err != nil {
 		writeErr(w, err)
 		return
+	}
+	for _, c := range convs {
+		removePagerState(c)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": n})
 }
@@ -225,28 +241,30 @@ func (s *Server) monitorViews(subs []MonitorSub) []monitorView {
 	if len(subs) == 0 {
 		return out
 	}
-	statuses, _ := s.store.MonitorTokenStatuses()
 	cfg := loadAppSettings()
 
 	// 先把要查的目标去重，并发查（每个自带 2s 超时），避免 20 个分区串行等待
-	keys := map[string]string{} // cacheKey -> 该目标对应的会话 id（取 token / user id 用）
+	type nameJob struct{ key, convID, token, base, userID string }
+	seen := map[string]bool{}
+	jobs := []nameJob{}
 	for _, sub := range subs {
+		k := "conv:" + sub.ConversationID
 		if sub.TargetType == "team" && sub.TeamID != "" {
-			if _, ok := keys["team:"+sub.TeamID]; !ok {
-				keys["team:"+sub.TeamID] = sub.ConversationID
-			}
-		} else if sub.ConversationID != "" {
-			keys["conv:"+sub.ConversationID] = sub.ConversationID
+			k = "team:" + sub.TeamID
 		}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		jobs = append(jobs, nameJob{key: k, convID: sub.ConversationID, token: sub.Token, base: sub.BaseURL, userID: sub.UserID})
 	}
 	var wg sync.WaitGroup
-	for k, convID := range keys {
+	for _, j := range jobs {
 		wg.Add(1)
-		go func(k, convID string) {
+		go func(j nameJob) {
 			defer wg.Done()
-			tok, connBase := s.store.MonitorTokenInfo(convID)
-			resolveNames(cfg, k, tok, convID, connBase)
-		}(k, convID)
+			resolveNames(cfg, j.key, j.token, j.convID, j.base, j.userID)
+		}(j)
 	}
 	wg.Wait()
 
@@ -264,12 +282,8 @@ func (s *Server) monitorViews(subs []MonitorSub) []monitorView {
 			CreatedAt:      sub.CreatedAt,
 			UpdatedAt:      sub.UpdatedAt,
 		}
-		if st, ok := statuses[sub.ConversationID]; ok {
-			if n, err := strconv.Atoi(st[0]); err == nil {
-				v.LastStatus = n
-			}
-			v.LastStatusAt = st[1]
-		}
+		v.LastStatus = sub.LastStatus
+		v.LastStatusAt = sub.LastStatusAt
 		if sub.TargetType == "team" && sub.TeamID != "" {
 			e := getNames("team:" + sub.TeamID)
 			v.TeamName = e.team
@@ -323,13 +337,16 @@ func getNames(key string) nameInfo {
 }
 
 // resolveNames 查一次并写缓存；查询中（并发）或失败都不阻塞调用方，直接回退。
-func resolveNames(cfg appSettings, key, token, convID, connBaseURL string) {
+func resolveNames(cfg appSettings, key, token, convID, connBaseURL, rowUserID string) {
 	base := strings.TrimRight(strings.TrimSpace(connBaseURL), "/")
 	if base == "" || token == "" {
 		return // 连接没上报地址 / 没有 token：直接回退（不再用设置页默认）
 	}
 	cfg.BaseURL = base
-	userID := loadAionUserID(convID)
+	userID := rowUserID
+	if userID == "" {
+		userID = loadAionUserID(convID) // 老数据回退到侧车
+	}
 	if userID == "" {
 		return // 不知道用户 id 就查不了（aioncore 要 runtime-token + user-id + conversation-id 三个头）
 	}
@@ -515,4 +532,43 @@ func saveAionUserID(convID, userID string) {
 		return
 	}
 	_ = os.Rename(tmp, path)
+}
+
+/* ---------------- pager 盯盘参数目录（T156） ---------------- */
+
+// pagerStateDir 与 pager 侧同源：<exe 目录>\<FQDN>\（参数文件与 pager 日志都在这里）。
+func pagerStateDir() string {
+	return filepath.Join(exeDirPath(), sanitizeFileName(computerFQDN()))
+}
+
+func pagerStateFile(convID string) string {
+	return filepath.Join(pagerStateDir(), sanitizeFileName(convID)+".json")
+}
+
+// ensurePagerStateDir 启动时建目录（不存在就建）。
+func ensurePagerStateDir() string {
+	dir := pagerStateDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("创建 pager 参数目录失败: %v", err)
+		return dir
+	}
+	log.Printf("pager 参数目录: %s", dir)
+	return dir
+}
+
+// removePagerState 删掉某会话的盯盘参数文件；失败只记日志。
+func removePagerState(convID string) {
+	if strings.TrimSpace(convID) == "" {
+		return
+	}
+	if err := os.Remove(pagerStateFile(convID)); err != nil && !os.IsNotExist(err) {
+		log.Printf("删除 pager 参数文件失败（%s）: %v", convID, err)
+	}
+}
+func exeDirPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	return filepath.Dir(exe)
 }

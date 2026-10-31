@@ -286,6 +286,7 @@ func main() {
 		log.Printf("有 %d 个监听地址启动失败，已跳过", len(failures))
 	}
 	baseURL = srv.BaseURL()
+	ensurePagerStateDir()
 
 	if isHeadless {
 		fmt.Printf("READY pid=%d url=%s\n", os.Getpid(), srv.BaseURL())

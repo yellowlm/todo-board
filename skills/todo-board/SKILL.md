@@ -163,13 +163,9 @@ on every poll (re-reporting `base_url` so a restarted AionUI on a new port is pi
 keep-alive are owned by the board process** (direct HTTP to the AionUI message endpoints), so the same change is
 never announced twice; the pager no longer reads the aioncore TOML/key files (`configfile.go`
 keeps a generic commented read/write pair). Listing and deleting watches from the built-in UI is
-a separate management surface that takes no key. If a heartbeat returns **404** the watch was
-cleared from another client: the pager stops polling immediately and never re-registers on its
-own. Restart the monitor from the agent side if you still need it.
-
-Pager log file: `<FQDN>.pager.log` (e.g. `work0.yellowlm.net.pager.log`). `TODOBOARD_DEBUGE`
-keeps its meaning: a full file path is used as-is, a directory or bare name gets the FQDN name,
-and when it is unset nothing is written.
+a separate management surface that takes no key. A **404** on heartbeat means the row is gone: if
+the pager still has its own saved parameters it re-registers through the same `start_monitor` path;
+if the board already deleted that file (a user cleared the watch) it stops polling for good.
 
 ## MCP: todoboard-pager
 
@@ -210,8 +206,9 @@ so it keeps notifying after the section is renamed.
 If something changed but **nothing was newly added**, the notice carries an extra section instead:
 `另有 N 条变更：` followed by the changed task titles, one per line.
 
-The MCP writes **no local files** (no snapshots, no state file); after a restart or a team rebuild the
-agent simply calls `start_monitor` again.
+The pager keeps its own watch parameters (section, interval, key) on disk under
+`<exe dir>\<FQDN>\`, so after a restart or a team rebuild it re-registers through the same
+`start_monitor` path by itself — the agent does not have to call `start_monitor` again.
 
 **MCP vs HTTP API**: use the HTTP API above for one-off reads/writes; use the MCP only when you need to
 keep watching a board and push changes into the conversation.

@@ -27,8 +27,12 @@ type MonitorSub struct {
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
 
-	Baseline string `json:"-"`
-	Token    string `json:"-"`
+	Baseline     string `json:"-"`
+	Token        string `json:"-"`
+	UserID       string `json:"-"`
+	BaseURL      string `json:"-"`
+	LastStatus   int    `json:"last_status"`
+	LastStatusAt string `json:"last_status_at"`
 }
 
 type MonitorPending struct {
@@ -47,6 +51,7 @@ type MonitorInput struct {
 	IntervalSec    int
 	Token          string
 	BaseURL        string
+	UserID         string
 }
 
 func normalizeTargetType(raw string) (string, error) {
@@ -88,12 +93,13 @@ func (s *Store) UpsertMonitor(sectionID int64, in MonitorInput) (MonitorSub, boo
 		in.ConversationID, sectionID).Scan(&id)
 	if err == nil {
 		if _, err := s.db.Exec(`UPDATE monitor_subs
-SET target_type = ?, team_id = ?, slot_id = ?, interval_sec = ?, updated_at = ?
+SET target_type = ?, team_id = ?, slot_id = ?, interval_sec = ?, updated_at = ?,
+    token = COALESCE(NULLIF(?, ''), token),
+    user_id = COALESCE(NULLIF(?, ''), user_id),
+    base_url = COALESCE(NULLIF(?, ''), base_url)
 WHERE id = ?`,
-			targetType, strings.TrimSpace(in.TeamID), strings.TrimSpace(in.SlotID), interval, now, id); err != nil {
-			return MonitorSub{}, false, err
-		}
-		if err := s.UpsertMonitorToken(in.ConversationID, targetType, in.TeamID, in.SlotID, in.Token, in.BaseURL, now); err != nil {
+			targetType, strings.TrimSpace(in.TeamID), strings.TrimSpace(in.SlotID), interval, now,
+			strings.TrimSpace(in.Token), strings.TrimSpace(in.UserID), strings.TrimRight(strings.TrimSpace(in.BaseURL), "/"), id); err != nil {
 			return MonitorSub{}, false, err
 		}
 		sub, err := s.MonitorByID(id)
@@ -104,17 +110,16 @@ WHERE id = ?`,
 	}
 
 	res, err := s.db.Exec(`INSERT INTO monitor_subs
-(section_id, target_type, team_id, slot_id, conversation_id, interval_sec, baseline, last_seen, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
-		sectionID, targetType, strings.TrimSpace(in.TeamID), strings.TrimSpace(in.SlotID), in.ConversationID, interval, now, now, now)
+(section_id, target_type, team_id, slot_id, conversation_id, interval_sec, baseline, last_seen, created_at, updated_at,
+ token, user_id, base_url)
+VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?)`,
+		sectionID, targetType, strings.TrimSpace(in.TeamID), strings.TrimSpace(in.SlotID), in.ConversationID, interval, now, now, now,
+		strings.TrimSpace(in.Token), strings.TrimSpace(in.UserID), strings.TrimRight(strings.TrimSpace(in.BaseURL), "/"))
 	if err != nil {
 		return MonitorSub{}, false, err
 	}
 	id, err = res.LastInsertId()
 	if err != nil {
-		return MonitorSub{}, false, err
-	}
-	if err := s.UpsertMonitorToken(in.ConversationID, targetType, in.TeamID, in.SlotID, in.Token, in.BaseURL, now); err != nil {
 		return MonitorSub{}, false, err
 	}
 	sub, err := s.MonitorByID(id)
@@ -124,35 +129,33 @@ VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
 // MonitorHeartbeat 只更新不新建：行不存在返回 ErrNotFound（＝盯盘已被清除）。
 func (s *Store) MonitorHeartbeat(sectionID int64, conversationID, token, baseURL, userID string) (MonitorSub, error) {
 	now := time.Now().Format(stampFmt)
-	res, err := s.db.Exec(`UPDATE monitor_subs SET last_seen = ?, updated_at = ? WHERE conversation_id = ? AND section_id = ?`,
-		now, now, conversationID, sectionID)
+	res, err := s.db.Exec(`UPDATE monitor_subs SET last_seen = ?, updated_at = ?,
+       token = COALESCE(NULLIF(?, ''), token),
+       base_url = COALESCE(NULLIF(?, ''), base_url),
+       user_id = COALESCE(NULLIF(?, ''), user_id)
+WHERE conversation_id = ? AND section_id = ?`,
+		now, now, strings.TrimSpace(token), strings.TrimRight(strings.TrimSpace(baseURL), "/"), strings.TrimSpace(userID), conversationID, sectionID)
 	if err != nil {
 		return MonitorSub{}, err
 	}
 	if err := affected(res); err != nil {
 		return MonitorSub{}, err
 	}
-	if strings.TrimSpace(token) != "" || strings.TrimSpace(baseURL) != "" {
-		if err := s.UpsertMonitorToken(conversationID, "", "", "", token, baseURL, now); err != nil {
-			return MonitorSub{}, err
-		}
-	}
-	if strings.TrimSpace(userID) != "" {
-		saveAionUserID(conversationID, strings.TrimSpace(userID))
-	}
 	return s.MonitorByConversation(sectionID, conversationID)
 }
 
 func (s *Store) MonitorByID(id int64) (MonitorSub, error) {
 	row := s.db.QueryRow(`SELECT m.id, m.section_id, s.name, m.target_type, m.team_id, m.slot_id,
-       m.conversation_id, m.interval_sec, m.baseline, m.last_seen, m.created_at, m.updated_at
+       m.conversation_id, m.interval_sec, m.baseline, m.last_seen, m.created_at, m.updated_at,
+       m.token, m.user_id, m.base_url, m.last_status, m.last_status_at
 FROM monitor_subs m JOIN sections s ON s.id = m.section_id WHERE m.id = ?`, id)
 	return scanMonitorSub(row)
 }
 
 func (s *Store) MonitorByConversation(sectionID int64, conversationID string) (MonitorSub, error) {
 	row := s.db.QueryRow(`SELECT m.id, m.section_id, s.name, m.target_type, m.team_id, m.slot_id,
-       m.conversation_id, m.interval_sec, m.baseline, m.last_seen, m.created_at, m.updated_at
+       m.conversation_id, m.interval_sec, m.baseline, m.last_seen, m.created_at, m.updated_at,
+       m.token, m.user_id, m.base_url, m.last_status, m.last_status_at
 FROM monitor_subs m JOIN sections s ON s.id = m.section_id WHERE m.section_id = ? AND m.conversation_id = ?`,
 		sectionID, conversationID)
 	return scanMonitorSub(row)
@@ -163,7 +166,8 @@ type scanner interface{ Scan(dest ...any) error }
 func scanMonitorSub(row scanner) (MonitorSub, error) {
 	var m MonitorSub
 	err := row.Scan(&m.ID, &m.SectionID, &m.SectionName, &m.TargetType, &m.TeamID, &m.SlotID,
-		&m.ConversationID, &m.IntervalSec, &m.Baseline, &m.LastSeen, &m.CreatedAt, &m.UpdatedAt)
+		&m.ConversationID, &m.IntervalSec, &m.Baseline, &m.LastSeen, &m.CreatedAt, &m.UpdatedAt,
+		&m.Token, &m.UserID, &m.BaseURL, &m.LastStatus, &m.LastStatusAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MonitorSub{}, ErrNotFound
 	}
@@ -176,7 +180,8 @@ func scanMonitorSub(row scanner) (MonitorSub, error) {
 // ListMonitors sectionID 为 nil 时列出全部（内核用），不限分区。
 func (s *Store) ListMonitors(sectionID *int64) ([]MonitorSub, error) {
 	q := `SELECT m.id, m.section_id, s.name, m.target_type, m.team_id, m.slot_id,
-       m.conversation_id, m.interval_sec, m.baseline, m.last_seen, m.created_at, m.updated_at
+       m.conversation_id, m.interval_sec, m.baseline, m.last_seen, m.created_at, m.updated_at,
+       m.token, m.user_id, m.base_url, m.last_status, m.last_status_at
 FROM monitor_subs m JOIN sections s ON s.id = m.section_id`
 	args := []any{}
 	if sectionID != nil {
@@ -252,72 +257,24 @@ func (s *Store) MonitorCountsBySection() (map[int64]int, error) {
 
 /* ---------------- token ---------------- */
 
-func (s *Store) UpsertMonitorToken(conversationID, targetType, teamID, slotID, token, baseURL, now string) error {
-	if strings.TrimSpace(conversationID) == "" {
-		return nil
+// MonitorTokenInfo 取该连接（分区 + 会话）的 token / base_url / user_id。
+func (s *Store) MonitorTokenInfo(sectionID int64, conversationID string) (token, baseURL, userID string) {
+	var tok, base, uid string
+	if err := s.db.QueryRow(`SELECT token, COALESCE(base_url,''), COALESCE(user_id,'')
+FROM monitor_subs WHERE section_id = ? AND conversation_id = ?`, sectionID, conversationID).Scan(&tok, &base, &uid); err != nil {
+		return "", "", ""
 	}
-	if strings.TrimSpace(token) == "" {
-		// 没有新 token 就只补目标信息，不清空旧 token
-		_, err := s.db.Exec(`UPDATE monitor_tokens SET target_type = COALESCE(NULLIF(?, ''), target_type),
-       team_id = COALESCE(NULLIF(?, ''), team_id), slot_id = COALESCE(NULLIF(?, ''), slot_id),
-       base_url = COALESCE(NULLIF(?, ''), base_url), updated_at = ?
-WHERE conversation_id = ?`, targetType, teamID, slotID, strings.TrimRight(strings.TrimSpace(baseURL), "/"), now, conversationID)
-		return err
-	}
-	_, err := s.db.Exec(`INSERT INTO monitor_tokens
-(conversation_id, target_type, team_id, slot_id, token, base_url, updated_at, last_status, last_status_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, 0, '')
-ON CONFLICT(conversation_id) DO UPDATE SET
-  target_type = COALESCE(NULLIF(excluded.target_type, ''), target_type),
-  team_id     = COALESCE(NULLIF(excluded.team_id, ''), team_id),
-  slot_id     = COALESCE(NULLIF(excluded.slot_id, ''), slot_id),
-  token       = excluded.token,
-  base_url    = COALESCE(NULLIF(excluded.base_url, ''), base_url),
-  updated_at  = excluded.updated_at`,
-		conversationID, targetType, teamID, slotID, token, strings.TrimRight(strings.TrimSpace(baseURL), "/"), now)
+	return tok, base, uid
+}
+
+// SetMonitorTokenStatus 写该连接的推送结果（last_status / last_status_at）。
+func (s *Store) SetMonitorTokenStatus(sectionID int64, conversationID string, status int, at string) error {
+	_, err := s.db.Exec(`UPDATE monitor_subs SET last_status = ?, last_status_at = ? WHERE section_id = ? AND conversation_id = ?`,
+		status, at, sectionID, conversationID)
 	return err
 }
 
-// MonitorToken 取某会话的 token（不存在返回空串，不报错：token 缺失按「跳过」处理）。
-func (s *Store) MonitorToken(conversationID string) string {
-	tok, _ := s.MonitorTokenInfo(conversationID)
-	return tok
-}
-
-// MonitorTokenInfo 取该连接的 token 与它上报的 base_url（没有则空串）。
-func (s *Store) MonitorTokenInfo(conversationID string) (token, baseURL string) {
-	var tok, base string
-	if err := s.db.QueryRow(`SELECT token, COALESCE(base_url, '') FROM monitor_tokens WHERE conversation_id = ?`, conversationID).Scan(&tok, &base); err != nil {
-		return "", ""
-	}
-	return tok, base
-}
-
-func (s *Store) SetMonitorTokenStatus(conversationID string, status int, at string) error {
-	_, err := s.db.Exec(`UPDATE monitor_tokens SET last_status = ?, last_status_at = ? WHERE conversation_id = ?`,
-		status, at, conversationID)
-	return err
-}
-
-// MonitorTokenStatuses 供 GET /api/monitors 读取每个会话最近一次推送结果。
-func (s *Store) MonitorTokenStatuses() (map[string][2]string, error) {
-	rows, err := s.db.Query(`SELECT conversation_id, CAST(last_status AS TEXT), last_status_at FROM monitor_tokens`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string][2]string{}
-	for rows.Next() {
-		var cid, status, at string
-		if err := rows.Scan(&cid, &status, &at); err != nil {
-			return nil, err
-		}
-		out[cid] = [2]string{status, at}
-	}
-	return out, rows.Err()
-}
-
-// LeaseTargets 供续租：按团队/会话聚合出 (target_type, id) 与候选 token。
+// LeaseTarget 续租目标：同一团队/会话聚合出的候选 token（来自各 subs 行）。
 type LeaseTarget struct {
 	TargetType     string
 	TeamID         string
@@ -327,7 +284,8 @@ type LeaseTarget struct {
 }
 
 func (s *Store) LeaseTargets() ([]LeaseTarget, error) {
-	rows, err := s.db.Query(`SELECT conversation_id, target_type, team_id, token, COALESCE(base_url, '') FROM monitor_tokens ORDER BY updated_at DESC`)
+	rows, err := s.db.Query(`SELECT conversation_id, target_type, team_id, token, COALESCE(base_url,'')
+FROM monitor_subs ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +308,16 @@ func (s *Store) LeaseTargets() ([]LeaseTarget, error) {
 			order = append(order, key)
 		}
 		if tok != "" {
-			lt.Tokens = append(lt.Tokens, tok)
+			dup := false
+			for _, t := range lt.Tokens {
+				if t == tok {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				lt.Tokens = append(lt.Tokens, tok)
+			}
 		}
 	}
 	out := make([]LeaseTarget, 0, len(order))
@@ -589,4 +556,30 @@ func decodeSnap(raw string) (sectionSnap, bool) {
 		s.Tasks = map[string]taskSnap{}
 	}
 	return s, true
+}
+
+// MonitorConversations 列出要删除的盯盘所属会话 id（清本区/清全部时删对应参数文件用）。
+func (s *Store) MonitorConversations(sectionID *int64) ([]string, error) {
+	q := `SELECT DISTINCT conversation_id FROM monitor_subs`
+	args := []any{}
+	if sectionID != nil {
+		q += ` WHERE section_id = ?`
+		args = append(args, *sectionID)
+	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		if c != "" {
+			out = append(out, c)
+		}
+	}
+	return out, rows.Err()
 }

@@ -216,11 +216,11 @@ func (k *monitorKernel) processSub(sec Section, tasks []Task, sub MonitorSub) {
 	}
 
 	cfg := loadAppSettings()
-	token, baseURL := k.store.MonitorTokenInfo(sub.ConversationID)
+	token, baseURL := sub.Token, sub.BaseURL
 	msg := buildMergedNotice(sec, pending)
 	status := pushNotice(cfg, sub, token, baseURL, msg)
 	now := time.Now()
-	if err := k.store.SetMonitorTokenStatus(sub.ConversationID, status, now.Format(stampFmt)); err != nil {
+	if err := k.store.SetMonitorTokenStatus(sub.SectionID, sub.ConversationID, status, now.Format(stampFmt)); err != nil {
 		log.Printf("盯盘：写推送状态失败（分区 #%d）: %v", sub.SectionID, err)
 	}
 	ids := make([]int64, 0, len(pending))
@@ -306,7 +306,10 @@ func pushNotice(cfg appSettings, sub MonitorSub, token, baseURL, msg string) int
 	if strings.TrimSpace(token) == "" {
 		return statusNoCreds
 	}
-	userID := loadAionUserID(sub.ConversationID)
+	userID := sub.UserID
+	if userID == "" {
+		userID = loadAionUserID(sub.ConversationID) // 老数据回退到侧车
+	}
 	if userID == "" {
 		return statusNoCreds
 	}
